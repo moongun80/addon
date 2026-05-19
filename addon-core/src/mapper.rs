@@ -10,7 +10,10 @@ use crate::keymap::KeyStroke;
 ///
 /// Implementations forward key strokes to actions by consulting
 /// a binding table built from the configuration file.
-pub trait KeyMapper {
+///
+/// **Note:** This trait requires `Send + Sync` to allow sharing
+/// the mapper across async task boundaries (e.g., the IPC server).
+pub trait KeyMapper: Send + Sync {
     /// Look up the action for a given key stroke.
     ///
     /// Returns `Some(&Action)` if the stroke is bound, or `None` otherwise.

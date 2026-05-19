@@ -12,6 +12,7 @@
 //! - [`error`] — Error types
 //! - [`log`] — Common logging initialization
 //! - [`os`] — OS adapter trait and platform identification
+//! - [`ipc`] — IPC message types for GUI ↔ Daemon communication
 
 pub mod config;
 pub mod keymap;
@@ -21,6 +22,7 @@ pub mod conflict;
 pub mod error;
 pub mod log;
 pub mod os;
+pub mod ipc;
 
 // Re-export os items at crate root for convenience.
 pub use os::{OsAdapter, OsPlatform};

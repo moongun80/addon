@@ -21,7 +21,10 @@ pub enum OsPlatform {
 ///
 /// Each platform crate implements this trait to provide platform-specific
 /// key event monitoring and action dispatch.
-pub trait OsAdapter {
+///
+/// **Note:** This trait requires `Send + Sync` to allow sharing the
+/// adapter across async task boundaries (e.g., the IPC server).
+pub trait OsAdapter: Send + Sync {
     /// Initialize the OS adapter.
     ///
     /// Performs any required setup (e.g., requesting accessibility permissions,

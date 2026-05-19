@@ -13,7 +13,9 @@
 //! 4. **Event dispatch** — captured key events are matched against the
 //!    keymap and dispatched to registered actions.
 
+use std::ffi::c_void;
 use std::os::raw::{c_char, c_int, c_ulong, c_uint};
+use std::ptr::NonNull;
 
 use addon_core::config::Config;
 use addon_core::keymap::KeyStroke;
@@ -24,8 +26,8 @@ use addon_core::{OsAdapter, OsPlatform, error::Error};
 // X11 FFI — opaque pointer types and core functions
 // ---------------------------------------------------------------------------
 
-/// Opaque X11 Display handle.
-pub type XDisplay = *mut std::ffi::c_void;
+/// Opaque X11 Display handle (non-null).
+pub type XDisplay = *mut c_void;
 
 /// Opaque X11 Window handle.
 pub type XWindow = c_ulong;
@@ -135,6 +137,41 @@ pub const KeyPress: c_int = 2;
 pub const KeyRelease: c_int = 3;
 pub const GenericEvent: c_int = 34;
 
+// ---------------------------------------------------------------------------
+// Thread-safe X11 display wrapper
+// ---------------------------------------------------------------------------
+
+/// Thread-safe wrapper around a raw X11 Display pointer.
+///
+/// X11 connections are thread-safe (see the Xlib manual), so we can
+/// safely mark this as `Send + Sync`.
+pub struct XDisplayHandle {
+    inner: NonNull<c_void>,
+}
+
+unsafe impl Send for XDisplayHandle {}
+unsafe impl Sync for XDisplayHandle {}
+
+impl XDisplayHandle {
+    /// Create from a raw non-null display pointer.
+    pub fn new(dpy: XDisplay) -> Self {
+        Self {
+            inner: NonNull::new(dpy).expect("X11 display pointer must be non-null"),
+        }
+    }
+
+    /// Borrow the raw pointer.
+    pub fn as_ptr(&self) -> XDisplay {
+        self.inner.as_ptr()
+    }
+}
+
+impl Drop for XDisplayHandle {
+    fn drop(&mut self) {
+        unsafe { XCloseDisplay(self.inner.as_ptr()) };
+    }
+}
+
 /// A Linux X11-specific adapter that uses X11 for global key capture
 /// and XTest for key simulation.
 pub struct LinuxX11Adapter {
@@ -143,7 +180,7 @@ pub struct LinuxX11Adapter {
     /// Key binding lookup engine built from `config.keybindings`.
     keymap: Box<dyn KeyMapper>,
     /// X11 display connection (None if not yet opened).
-    display: Option<XDisplay>,
+    display: Option<XDisplayHandle>,
     /// Whether the adapter has been fully initialized.
     initialized: bool,
 }
@@ -178,16 +215,13 @@ impl LinuxX11Adapter {
         }
 
         tracing::info!("Opened X11 display");
-        self.display = Some(dpy);
+        self.display = Some(XDisplayHandle::new(dpy));
         Ok(())
     }
 
     /// Closes the X11 display connection.
     fn close_display(&mut self) {
-        if let Some(dpy) = self.display.take() {
-            unsafe { XCloseDisplay(dpy) };
-            tracing::info!("Closed X11 display");
-        }
+        self.display.take();
     }
 
     /// Builds and registers all key bindings from the configuration.
@@ -219,7 +253,7 @@ impl LinuxX11Adapter {
 
     /// Simulates a key press or release via the XTest extension.
     pub fn simulate_key(&self, keycode: c_uint, press: bool) -> Result<(), Error> {
-        let dpy = self.display.ok_or_else(|| {
+        let dpy = self.display.as_ref().map(|h| h.as_ptr()).ok_or_else(|| {
             Error::AdapterNotAvailable("X11 display not open".to_string())
         })?;
 
@@ -238,7 +272,7 @@ impl LinuxX11Adapter {
 
     /// Grabs the keyboard to capture all key events globally.
     fn grab_keyboard(&mut self) -> Result<(), Error> {
-        let dpy = self.display.ok_or_else(|| {
+        let dpy = self.display.as_ref().map(|h| h.as_ptr()).ok_or_else(|| {
             Error::AdapterNotAvailable("X11 display not open".to_string())
         })?;
 
@@ -265,7 +299,7 @@ impl LinuxX11Adapter {
 
     /// Releases the keyboard grab.
     fn ungrab_keyboard(&mut self) {
-        if let Some(dpy) = self.display {
+        if let Some(dpy) = self.display.as_ref().map(|h| h.as_ptr()) {
             unsafe { XUngrabKeyboard(dpy, 0) };
             tracing::info!("Keyboard ungrabbed");
         }

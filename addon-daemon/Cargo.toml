@@ -5,19 +5,23 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "Daemon binary for the addon — background service that watches and applies key bindings"
+description = "Daemon binary for the addon — background service with IPC support"
 
 [dependencies]
 addon-core = { path = "../addon-core" }
 addon-macos = { path = "../addon-macos", optional = true }
 addon-windows = { path = "../addon-windows", optional = true }
 addon-linux = { path = "../addon-linux", optional = true }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-thiserror = { workspace = true }
-tokio = { workspace = true }
-dirs = { workspace = true }
-anyhow = { workspace = true }
+tokio = { workspace = true, features = ["full", "signal"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde = { workspace = true }
+serde_json = "1"
+cfg-if = "1"
+flume = "0.11"
+thiserror.workspace = true
+anyhow.workspace = true
+dirs.workspace = true
 
 [features]
 default = []
@@ -26,5 +30,5 @@ windows = ["addon-windows"]
 linux = ["addon-linux"]
 
 [[bin]]
-name = "addon-daemon"
+name = "addon"
 path = "src/main.rs"
