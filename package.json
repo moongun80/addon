@@ -1,0 +1,12 @@
+{
+  "name": "addon",
+  "version": "1.0.0",
+  "description": "Personal keyboard and mouse shortcut synchronization tool",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "keywords": ["keyboard", "mouse", "shortcut", "sync"],
+  "author": "moongun80",
+  "license": "ISC"
+}
