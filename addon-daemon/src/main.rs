@@ -138,7 +138,15 @@ fn get_config_path() -> Result<PathBuf> {
         return Ok(PathBuf::from(path));
     }
 
-    // Check home directory.
+    // Check XDG config directory (~/.config/addon/config.yaml) to match README
+    if let Some(config_dir) = dirs::config_dir() {
+        let xdg_config = config_dir.join("addon").join("config.yaml");
+        if xdg_config.exists() {
+            return Ok(xdg_config);
+        }
+    }
+
+    // Check home directory (~/.addon/config.yaml) as fallback
     if let Some(home) = dirs::home_dir() {
         let home_config = home.join(".addon").join("config.yaml");
         if home_config.exists() {
@@ -146,18 +154,15 @@ fn get_config_path() -> Result<PathBuf> {
         }
     }
 
-    // Check current directory.
+    // Check current directory (./config.yaml) as fallback
     let local_config = PathBuf::from("config.yaml");
     if local_config.exists() {
         return Ok(local_config);
     }
 
-    // Default fallback.
-    if let Some(home) = dirs::home_dir() {
-        Ok(home.join(".addon").join("config.yaml"))
-    } else {
-        Err(anyhow::anyhow!("cannot determine config path"))
-    }
+    Err(anyhow::anyhow!(
+        "Config not found. Searched: ~/.config/addon/config.yaml, ~/.addon/config.yaml, ./config.yaml"
+    ))
 }
 
 /// Creates the platform-specific OS adapter based on the target OS feature.

@@ -270,51 +270,30 @@ fn reload_config_inner(
 
 /// Extract key bindings from a JSON config value (for SetConfig requests).
 fn cfg_keys_from_json(json: &serde_json::Value) -> Vec<addon_core::ipc::KeyBindingJson> {
-    if let Some(obj) = json.as_object() {
-        if let Some(bindings) = obj.get("keybindings").and_then(|v| v.as_array()) {
-            return bindings
-                .iter()
-                .filter_map(|b| {
-                    let id = b
-                        .get("id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let keys = b
-                        .get("keys")
-                        .and_then(|v| v.as_array())
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(|v| v.as_str().map(String::from))
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
-                    let action_type = b
-                        .get("type")
-                        .and_then(|v| v.as_str())
-                        .or_else(|| {
-                            b.get("action")
-                                .and_then(|a| a.get("type"))
-                                .and_then(|v| v.as_str())
-                        })
-                        .unwrap_or("unknown")
-                        .to_string();
-                    Some(addon_core::ipc::KeyBindingJson {
-                        id,
-                        keys,
-                        action_type,
-                    })
-                })
-                .collect();
-        }
-    }
-    Vec::new()
+    // Use serde's type-safe deserialization instead of manual JSON navigation.
+    serde_json::from_value::<addon_core::config::Config>(json.clone())
+        .map(|config| {
+            config
+                .keybindings
+                .into_iter()
+                .map(addon_core::ipc::KeyBindingJson::from)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
-/// Returns the path to the configuration file.
+/// Returns the path to the configuration file (same logic as main).
 fn get_config_path() -> Result<std::path::PathBuf, String> {
+    use std::path::PathBuf;
+
     if let Ok(path) = std::env::var("ADDON_CONFIG") {
-        return Ok(std::path::PathBuf::from(path));
+        return Ok(PathBuf::from(path));
+    }
+    if let Some(config_dir) = dirs::config_dir() {
+        let p = config_dir.join("addon").join("config.yaml");
+        if p.exists() {
+            return Ok(p);
+        }
     }
     if let Some(home) = dirs::home_dir() {
         let p = home.join(".addon").join("config.yaml");
@@ -322,14 +301,10 @@ fn get_config_path() -> Result<std::path::PathBuf, String> {
             return Ok(p);
         }
     }
-    if std::path::PathBuf::from("config.yaml").exists() {
-        return Ok(std::path::PathBuf::from("config.yaml"));
+    if PathBuf::from("config.yaml").exists() {
+        return Ok(PathBuf::from("config.yaml"));
     }
-    if let Some(home) = dirs::home_dir() {
-        Ok(home.join(".addon").join("config.yaml"))
-    } else {
-        Err("cannot determine config path".to_string())
-    }
+    Err("cannot determine config path".to_string())
 }
 
 /// A lightweight config struct used for IPC message validation.

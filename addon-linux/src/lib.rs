@@ -102,6 +102,7 @@ extern "C" {
     ) -> c_int;
 
     // XInput2 extension
+    fn XIQueryVersion(dpy: XDisplay, major: *mut c_int, minor: *mut c_int) -> c_int;
     fn XISelectEvents(
         dpy: XDisplay,
         grab_window: XWindow,
@@ -122,10 +123,10 @@ const KEYBOARD_MODE_ASYNC: c_int = 0;
 const REVERT_TO_ROOT: XWindow = 0;
 const CURRENT_TIME: c_ulong = 0;
 
-// XInput2 event types
-#[allow(dead_code)] const XI_ALL_DEVICES: c_int = -1;
-#[allow(dead_code)] const XI_RAW_KEY_PRESS: c_int = 238;
-#[allow(dead_code)] const XI_RAW_KEY_RELEASE: c_int = 239;
+// XInput2 event types (XI2 requires these to be accessible)
+const XI_ALL_DEVICES: c_int = -1;
+const XI_RAW_KEY_PRESS: c_int = 238;
+const XI_RAW_KEY_RELEASE: c_int = 239;
 #[allow(dead_code)] const XI_HIERARCHY_CHANGED: c_int = 17;
 
 // XEvent type constants
@@ -182,6 +183,52 @@ pub struct LinuxX11Adapter {
 }
 
 impl LinuxX11Adapter {
+    /// Registers XI2 raw keyboard events for all devices.
+    /// This enables global key capture across all applications.
+    fn register_xi2(&mut self) -> Result<(), Error> {
+        let dpy = self
+            .display
+            .as_ref()
+            .map(|h| h.as_ptr())
+            .ok_or_else(|| Error::AdapterNotAvailable("X11 display not open".to_string()))?;
+
+        // Check XI2 version support
+        let mut major = 2;
+        let mut minor = 2;
+        let result = unsafe {
+            XIQueryVersion(dpy, &mut major, &mut minor)
+        };
+        if result == FALSE {
+            return Err(Error::AdapterNotAvailable(
+                "XInput2 extension not available".to_string(),
+            ));
+        }
+        tracing::info!("XInput2 version supported: {}.{}", major, minor);
+
+        // Setup event mask for raw key press/release events
+        let mut mask = [0u8; 32];
+        mask[XI_RAW_KEY_PRESS / 8] |= 1 << (XI_RAW_KEY_PRESS % 8);
+        mask[XI_RAW_KEY_RELEASE / 8] |= 1 << (XI_RAW_KEY_RELEASE % 8);
+
+        let xi_mask = XIEventMask {
+            deviceid: XI_ALL_DEVICES,
+            mask: mask.as_mut_ptr(),
+        };
+
+        let result = unsafe {
+            XISelectEvents(dpy, REVERT_TO_ROOT, &xi_mask as *const XIEventMask as *mut XIEventMask, 1)
+        };
+
+        if result == FALSE {
+            return Err(Error::AdapterNotAvailable(
+                "Failed to select XI2 raw events".to_string(),
+            ));
+        }
+
+        tracing::info!("XI2 raw keyboard events registered for all devices");
+        Ok(())
+    }
+
     /// Creates a new Linux X11 adapter with the given configuration and key map.
     pub fn new(config: Config, keymap: Box<dyn KeyMapper>) -> Self {
         Self {
@@ -198,8 +245,10 @@ impl LinuxX11Adapter {
             return Ok(());
         }
 
-        let display_name = std::ffi::CString::new(":0")
-            .map_err(|e| Error::AdapterNotAvailable(format!("Invalid display name: {}", e)))?;
+        // Use DISPLAY environment variable, fallback to ":0"
+        let display_name = std::env::var("DISPLAY").unwrap_or_else(|_| ":0".to_string());
+        let display_name = std::ffi::CString::new(display_name)
+            .map_err(|e| Error::AdapterNotAvailable(format!("Invalid DISPLAY name: {}", e)))?;
 
         let dpy = unsafe { XOpenDisplay(display_name.as_ptr()) };
 
@@ -309,6 +358,7 @@ impl OsAdapter for LinuxX11Adapter {
     fn init(&mut self) -> Result<(), Error> {
         tracing::info!("Initializing Linux X11 adapter");
         self.open_display()?;
+        self.register_xi2()?; // Register XI2 global key grab
         self.register_bindings()?;
         self.initialized = true;
         Ok(())

@@ -16,6 +16,7 @@ pub struct Config {
     /// Config file version (e.g. `"1.0"`).
     pub version: String,
     /// Global settings that apply to all key bindings.
+    #[serde(default)]
     pub global: GlobalSettings,
     /// List of key bindings to install.
     pub keybindings: Vec<KeyBinding>,
