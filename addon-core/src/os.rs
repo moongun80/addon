@@ -7,7 +7,7 @@
 use crate::error::Error;
 
 /// Identifies the target operating system.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OsPlatform {
     /// macOS
     Macos,
@@ -15,6 +15,13 @@ pub enum OsPlatform {
     Windows,
     /// Linux
     Linux,
+}
+
+impl OsPlatform {
+    /// Returns the platform used for "all platforms" conflict detection.
+    pub fn platform_all() -> OsPlatform {
+        OsPlatform::Linux
+    }
 }
 
 /// Trait for OS-specific key binding adapters.

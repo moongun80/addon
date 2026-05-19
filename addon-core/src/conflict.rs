@@ -3,6 +3,7 @@
 /// Provides [`detect_conflicts`] which scans a list of key bindings and
 /// returns any overlapping key strokes per platform.
 use crate::config::KeyBinding;
+use crate::os::OsPlatform;
 
 /// A detected conflict between two key bindings.
 ///
@@ -14,7 +15,7 @@ pub struct Conflict {
     /// ID of the second conflicting binding.
     pub binding2: String,
     /// The platform affected, or `None` for all platforms.
-    pub platform: Option<String>,
+    pub platform: Option<OsPlatform>,
 }
 
 /// Detect conflicts among the given key bindings.
@@ -32,14 +33,15 @@ pub fn detect_conflicts(keybindings: &[KeyBinding]) -> Vec<Conflict> {
     let mut conflicts = Vec::new();
 
     // Build a map: (platform, key_vector) -> list of binding IDs
-    // For simplicity, we use a string representation of the key combination.
-    let mut lookup: std::collections::HashMap<(Option<String>, String), Vec<String>> =
+    let mut lookup: std::collections::HashMap<(OsPlatform, String), Vec<String>> =
         std::collections::HashMap::new();
 
     for binding in keybindings {
         // Add bindings for all platforms (default keys)
         for key in &binding.keys {
-            let entry = lookup.entry((None, key.clone())).or_default();
+            let entry = lookup
+                .entry((OsPlatform::platform_all(), key.clone()))
+                .or_default();
             entry.push(binding.id.clone());
         }
 
@@ -48,7 +50,7 @@ pub fn detect_conflicts(keybindings: &[KeyBinding]) -> Vec<Conflict> {
             if let Some(ref macos_keys) = overrides.macos {
                 for key in macos_keys {
                     let entry = lookup
-                        .entry((Some("macos".to_string()), key.clone()))
+                        .entry((OsPlatform::Macos, key.clone()))
                         .or_default();
                     entry.push(binding.id.clone());
                 }
@@ -56,7 +58,7 @@ pub fn detect_conflicts(keybindings: &[KeyBinding]) -> Vec<Conflict> {
             if let Some(ref windows_keys) = overrides.windows {
                 for key in windows_keys {
                     let entry = lookup
-                        .entry((Some("windows".to_string()), key.clone()))
+                        .entry((OsPlatform::Windows, key.clone()))
                         .or_default();
                     entry.push(binding.id.clone());
                 }
@@ -73,7 +75,7 @@ pub fn detect_conflicts(keybindings: &[KeyBinding]) -> Vec<Conflict> {
                     conflicts.push(Conflict {
                         binding1: ids[i].clone(),
                         binding2: ids[j].clone(),
-                        platform: platform.clone(),
+                        platform: Some(*platform),
                     });
                 }
             }
@@ -124,6 +126,6 @@ mod tests {
         assert_eq!(conflicts.len(), 1);
         assert_eq!(conflicts[0].binding1, "paste");
         assert_eq!(conflicts[0].binding2, "paste2");
-        assert!(conflicts[0].platform.is_none());
+        assert_eq!(conflicts[0].platform, Some(OsPlatform::Linux));
     }
 }

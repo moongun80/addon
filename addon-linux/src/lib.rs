@@ -18,7 +18,6 @@ use std::os::raw::{c_char, c_int, c_uint, c_ulong};
 use std::ptr::NonNull;
 
 use addon_core::config::Config;
-use addon_core::keymap::KeyStroke;
 use addon_core::mapper::KeyMapper;
 use addon_core::{error::Error, OsAdapter, OsPlatform};
 
@@ -102,7 +101,6 @@ extern "C" {
     ) -> c_int;
 
     // XInput2 extension
-    fn XIQueryVersion(dpy: XDisplay, major: *mut c_int, minor: *mut c_int) -> c_int;
     fn XISelectEvents(
         dpy: XDisplay,
         grab_window: XWindow,
@@ -112,27 +110,42 @@ extern "C" {
 
     // XKB (keycode → keysym translation)
     fn XkbKeycodeToKeysym(dpy: XDisplay, keycode: c_uint, group: c_int, level: c_int) -> XKeysym;
+    fn XFlush(dpy: XDisplay) -> c_int;
     fn XKeysymToString(keysym: XKeysym) -> *const c_char;
 }
 
-// X11 constants — named for Xlib compatibility (lowercase matches C API)
+// X11 constants
+const False: c_int = 0;
+const True: c_int = 1;
+const CurrentTime: c_ulong = 0;
+const GrabModeAsync: c_int = 2;
+const GrabModeAsync_KB: c_int = 3;
+const AnyKey: c_uint = 0;
+
+// X11 compatibility constants (lowercase matches C API)
 const FALSE: c_int = 0;
 const TRUE: c_int = 1;
 const POINTER_MODE_ASYNC: c_int = 0;
 const KEYBOARD_MODE_ASYNC: c_int = 0;
 const REVERT_TO_ROOT: XWindow = 0;
-const CURRENT_TIME: c_ulong = 0;
 
-// XInput2 event types (XI2 requires these to be accessible)
+// XInput2 event types
+#[allow(dead_code)]
 const XI_ALL_DEVICES: c_int = -1;
+#[allow(dead_code)]
 const XI_RAW_KEY_PRESS: c_int = 238;
+#[allow(dead_code)]
 const XI_RAW_KEY_RELEASE: c_int = 239;
-#[allow(dead_code)] const XI_HIERARCHY_CHANGED: c_int = 17;
+#[allow(dead_code)]
+const XI_HIERARCHY_CHANGED: c_int = 17;
 
 // XEvent type constants
-#[allow(dead_code)] const KEY_PRESS: c_int = 2;
-#[allow(dead_code)] const KEY_RELEASE: c_int = 3;
-#[allow(dead_code)] const GENERIC_EVENT: c_int = 34;
+#[allow(dead_code)]
+const KEY_PRESS: c_int = 2;
+#[allow(dead_code)]
+const KEY_RELEASE: c_int = 3;
+#[allow(dead_code)]
+const GENERIC_EVENT: c_int = 34;
 
 // ---------------------------------------------------------------------------
 // Thread-safe X11 display wrapper
@@ -183,52 +196,6 @@ pub struct LinuxX11Adapter {
 }
 
 impl LinuxX11Adapter {
-    /// Registers XI2 raw keyboard events for all devices.
-    /// This enables global key capture across all applications.
-    fn register_xi2(&mut self) -> Result<(), Error> {
-        let dpy = self
-            .display
-            .as_ref()
-            .map(|h| h.as_ptr())
-            .ok_or_else(|| Error::AdapterNotAvailable("X11 display not open".to_string()))?;
-
-        // Check XI2 version support
-        let mut major = 2;
-        let mut minor = 2;
-        let result = unsafe {
-            XIQueryVersion(dpy, &mut major, &mut minor)
-        };
-        if result == FALSE {
-            return Err(Error::AdapterNotAvailable(
-                "XInput2 extension not available".to_string(),
-            ));
-        }
-        tracing::info!("XInput2 version supported: {}.{}", major, minor);
-
-        // Setup event mask for raw key press/release events
-        let mut mask = [0u8; 32];
-        mask[XI_RAW_KEY_PRESS / 8] |= 1 << (XI_RAW_KEY_PRESS % 8);
-        mask[XI_RAW_KEY_RELEASE / 8] |= 1 << (XI_RAW_KEY_RELEASE % 8);
-
-        let xi_mask = XIEventMask {
-            deviceid: XI_ALL_DEVICES,
-            mask: mask.as_mut_ptr(),
-        };
-
-        let result = unsafe {
-            XISelectEvents(dpy, REVERT_TO_ROOT, &xi_mask as *const XIEventMask as *mut XIEventMask, 1)
-        };
-
-        if result == FALSE {
-            return Err(Error::AdapterNotAvailable(
-                "Failed to select XI2 raw events".to_string(),
-            ));
-        }
-
-        tracing::info!("XI2 raw keyboard events registered for all devices");
-        Ok(())
-    }
-
     /// Creates a new Linux X11 adapter with the given configuration and key map.
     pub fn new(config: Config, keymap: Box<dyn KeyMapper>) -> Self {
         Self {
@@ -245,10 +212,8 @@ impl LinuxX11Adapter {
             return Ok(());
         }
 
-        // Use DISPLAY environment variable, fallback to ":0"
-        let display_name = std::env::var("DISPLAY").unwrap_or_else(|_| ":0".to_string());
-        let display_name = std::ffi::CString::new(display_name)
-            .map_err(|e| Error::AdapterNotAvailable(format!("Invalid DISPLAY name: {}", e)))?;
+        let display_name = std::ffi::CString::new(":0")
+            .map_err(|e| Error::AdapterNotAvailable(format!("Invalid display name: {}", e)))?;
 
         let dpy = unsafe { XOpenDisplay(display_name.as_ptr()) };
 
@@ -268,9 +233,8 @@ impl LinuxX11Adapter {
         self.display.take();
     }
 
-    /// Builds and registers all key bindings from the configuration.
+    /// Register key bindings (no-op; keymap is built by `Config::build_keymapper`).
     fn register_bindings(&mut self) -> Result<(), Error> {
-        self.build_keymap();
         tracing::info!(
             "Configured {} key binding(s) for Linux X11",
             self.config.keybindings.len()
@@ -278,21 +242,22 @@ impl LinuxX11Adapter {
         Ok(())
     }
 
-    /// Rebuilds the keymap from the current configuration.
-    fn build_keymap(&mut self) {
-        let mut map: std::collections::HashMap<KeyStroke, addon_core::actions::Action> =
-            std::collections::HashMap::new();
+    /// Simulates a key press via the XTest extension.
+    unsafe fn simulate_key_press(display: XDisplay, keycode: c_uint) {
+        XTestFakeKeyEvent(display, keycode, True, CurrentTime);
+        XFlush(display);
+    }
 
-        for binding in &self.config.keybindings {
-            let keys = binding.effective_keys("linux");
-            for key_str in keys {
-                if let Ok(stroke) = KeyStroke::parse(key_str) {
-                    map.insert(stroke, binding.action.clone());
-                }
-            }
-        }
+    /// Simulates a key release via the XTest extension.
+    unsafe fn simulate_key_release(display: XDisplay, keycode: c_uint) {
+        XTestFakeKeyEvent(display, keycode, False, CurrentTime);
+        XFlush(display);
+    }
 
-        self.keymap = Box::new(LinuxX11KeyMapper { map });
+    /// Simulates flushing pending X11 requests.
+    #[allow(dead_code)]
+    unsafe fn x_flush(display: XDisplay) {
+        XFlush(display);
     }
 
     /// Simulates a key press or release via the XTest extension.
@@ -303,10 +268,11 @@ impl LinuxX11Adapter {
             .map(|h| h.as_ptr())
             .ok_or_else(|| Error::AdapterNotAvailable("X11 display not open".to_string()))?;
 
-        let result =
-            unsafe { XTestFakeKeyEvent(dpy, keycode, if press { TRUE } else { FALSE }, 0) };
+        let result = unsafe {
+            XTestFakeKeyEvent(dpy, keycode, if press { True } else { False }, CurrentTime)
+        };
 
-        if result == FALSE {
+        if result == False {
             return Err(Error::AdapterNotAvailable(format!(
                 "XTestFakeKeyEvent failed for keycode {}",
                 keycode
@@ -329,13 +295,13 @@ impl LinuxX11Adapter {
                 dpy,
                 REVERT_TO_ROOT,
                 1, // owner_events: allow pointer events to pass through
-                POINTER_MODE_ASYNC,
-                KEYBOARD_MODE_ASYNC,
+                GrabModeAsync,
+                GrabModeAsync_KB,
                 0,
             )
         };
 
-        if result == FALSE {
+        if result == False {
             return Err(Error::AdapterNotAvailable(
                 "Failed to grab keyboard. Is another app holding it?".to_string(),
             ));
@@ -348,7 +314,7 @@ impl LinuxX11Adapter {
     /// Releases the keyboard grab.
     fn ungrab_keyboard(&mut self) {
         if let Some(dpy) = self.display.as_ref().map(|h| h.as_ptr()) {
-            unsafe { XUngrabKeyboard(dpy, CURRENT_TIME) };
+            unsafe { XUngrabKeyboard(dpy, CurrentTime) };
             tracing::info!("Keyboard ungrabbed");
         }
     }
@@ -358,7 +324,6 @@ impl OsAdapter for LinuxX11Adapter {
     fn init(&mut self) -> Result<(), Error> {
         tracing::info!("Initializing Linux X11 adapter");
         self.open_display()?;
-        self.register_xi2()?; // Register XI2 global key grab
         self.register_bindings()?;
         self.initialized = true;
         Ok(())
@@ -392,12 +357,17 @@ impl OsAdapter for LinuxX11Adapter {
 }
 
 /// A concrete implementation of `KeyMapper` backed by a HashMap.
+///
+/// Used internally by the adapter when building the keymap from config.
 struct LinuxX11KeyMapper {
-    map: std::collections::HashMap<KeyStroke, addon_core::actions::Action>,
+    map: std::collections::HashMap<
+        addon_core::keymap::KeyStroke,
+        addon_core::actions::Action,
+    >,
 }
 
 impl KeyMapper for LinuxX11KeyMapper {
-    fn lookup(&self, stroke: &KeyStroke) -> Option<&addon_core::actions::Action> {
+    fn lookup(&self, stroke: &addon_core::keymap::KeyStroke) -> Option<&addon_core::actions::Action> {
         self.map.get(stroke)
     }
 }
@@ -427,14 +397,12 @@ mod tests {
     fn test_keymap_build() {
         let config = test_config();
         let mut adapter = LinuxX11Adapter::new(
-            config,
-            Box::new(LinuxX11KeyMapper {
-                map: std::collections::HashMap::new(),
-            }),
+            config.clone(),
+            config.build_keymapper(OsPlatform::Linux),
         );
-        adapter.build_keymap();
+        adapter.register_bindings().unwrap();
 
-        let stroke = KeyStroke::parse("Ctrl+V").unwrap();
+        let stroke = addon_core::keymap::KeyStroke::parse("Ctrl+V").unwrap();
         assert!(adapter.keymap.lookup(&stroke).is_some());
     }
 
@@ -442,14 +410,12 @@ mod tests {
     fn test_keymap_missing() {
         let config = test_config();
         let mut adapter = LinuxX11Adapter::new(
-            config,
-            Box::new(LinuxX11KeyMapper {
-                map: std::collections::HashMap::new(),
-            }),
+            config.clone(),
+            config.build_keymapper(OsPlatform::Linux),
         );
-        adapter.build_keymap();
+        adapter.register_bindings().unwrap();
 
-        let stroke = KeyStroke::parse("Ctrl+X").unwrap();
+        let stroke = addon_core::keymap::KeyStroke::parse("Ctrl+X").unwrap();
         assert!(adapter.keymap.lookup(&stroke).is_none());
     }
 

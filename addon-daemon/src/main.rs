@@ -22,7 +22,6 @@ mod log;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use std::collections::HashMap;
 use tracing::{info, warn};
 
 /// Main entry point for the daemon.
@@ -174,19 +173,21 @@ fn get_config_path() -> Result<PathBuf> {
 fn create_adapter(_config: addon_core::config::Config) -> Result<Box<dyn addon_core::OsAdapter>> {
     #[cfg(feature = "linux")]
     {
-        let mapper = build_keymapper(&_config);
-        return Ok(Box::new(addon_linux::LinuxX11Adapter::new(_config, mapper)));
+        let mapper = _config.build_keymapper(addon_core::os::OsPlatform::Linux);
+        return Ok(Box::new(addon_linux::LinuxX11Adapter::new(
+            _config, mapper,
+        )));
     }
 
     #[cfg(feature = "macos")]
     {
-        let mapper = build_keymapper(&_config);
+        let mapper = _config.build_keymapper(addon_core::os::OsPlatform::Macos);
         return Ok(Box::new(addon_macos::MacOsAdapter::new(_config, mapper)));
     }
 
     #[cfg(feature = "windows")]
     {
-        let mapper = build_keymapper(&_config);
+        let mapper = _config.build_keymapper(addon_core::os::OsPlatform::Windows);
         return Ok(Box::new(addon_windows::WindowsAdapter::new(
             _config, mapper,
         )));
@@ -197,50 +198,5 @@ fn create_adapter(_config: addon_core::config::Config) -> Result<Box<dyn addon_c
         Err(anyhow::anyhow!(
             "No OS adapter enabled. Enable one of: linux, macos, windows"
         ))
-    }
-}
-
-/// Builds a key mapper from the configuration.
-#[allow(dead_code)]
-fn build_keymapper(config: &addon_core::config::Config) -> Box<dyn addon_core::mapper::KeyMapper> {
-    let mut map: HashMap<addon_core::keymap::KeyStroke, addon_core::actions::Action> =
-        HashMap::new();
-
-    for binding in &config.keybindings {
-        for key_str in &binding.keys {
-            if let Ok(stroke) = addon_core::keymap::KeyStroke::parse(key_str) {
-                map.insert(stroke, binding.action.clone());
-            }
-        }
-        // Also include overrides.
-        if let Some(ref overrides) = binding.overrides {
-            for key_str in overrides.macos.iter().flatten() {
-                if let Ok(stroke) = addon_core::keymap::KeyStroke::parse(key_str) {
-                    map.insert(stroke, binding.action.clone());
-                }
-            }
-            for key_str in overrides.windows.iter().flatten() {
-                if let Ok(stroke) = addon_core::keymap::KeyStroke::parse(key_str) {
-                    map.insert(stroke, binding.action.clone());
-                }
-            }
-        }
-    }
-
-    Box::new(DaemonKeyMapper { map })
-}
-
-/// A simple key mapper backed by a HashMap.
-#[allow(dead_code)]
-struct DaemonKeyMapper {
-    map: HashMap<addon_core::keymap::KeyStroke, addon_core::actions::Action>,
-}
-
-impl addon_core::mapper::KeyMapper for DaemonKeyMapper {
-    fn lookup(
-        &self,
-        stroke: &addon_core::keymap::KeyStroke,
-    ) -> Option<&addon_core::actions::Action> {
-        self.map.get(stroke)
     }
 }
