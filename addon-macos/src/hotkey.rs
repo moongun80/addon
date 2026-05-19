@@ -85,11 +85,19 @@ fn uint_to_hot_key_id(val: c_uint) -> HotKeyId {
 }
 
 /// Convert a `Modifier` bitmask to Carbon event modifier flags.
-fn modifiers_to_cocoa(modifiers: &[KeyStroke]) -> c_uint {
-    // For now, return 0 — real implementation would translate
-    // KeyStroke.modifiers → Cocoa NSEventModifierFlags.
-    let _ = modifiers;
-    0
+fn modifiers_to_cocoa(modifiers: &[addon_core::keymap::Modifier]) -> c_uint {
+    let mut flags: c_uint = 0;
+    for m in modifiers {
+        match m {
+            addon_core::keymap::Modifier::Control  => flags |= 0x0010,
+            addon_core::keymap::Modifier::Shift    => flags |= 0x0002,
+            addon_core::keymap::Modifier::Alt      => flags |= 0x0008,
+            addon_core::keymap::Modifier::Option   => flags |= 0x0008,
+            addon_core::keymap::Modifier::Command  => flags |= 0x0001,
+            addon_core::keymap::Modifier::CapsLock => flags |= 0x0004,
+        }
+    }
+    flags
 }
 
 // ---------------------------------------------------------------------------
