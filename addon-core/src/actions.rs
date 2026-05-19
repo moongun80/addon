@@ -2,7 +2,6 @@
 //!
 /// Defines the [`Action`] enum which represents the operation to perform
 /// when a key binding is triggered.
-
 use serde::{Deserialize, Serialize};
 
 /// An action to perform when a key binding fires.

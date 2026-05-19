@@ -2,7 +2,6 @@
 //!
 /// Defines the [`KeyMapper`] trait that OS-specific adapters implement
 /// to provide key-stroke lookups and binding checks.
-
 use crate::actions::Action;
 use crate::keymap::KeyStroke;
 

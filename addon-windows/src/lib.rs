@@ -17,14 +17,13 @@ use std::os::raw::c_int;
 use addon_core::config::Config;
 use addon_core::keymap::KeyStroke;
 use addon_core::mapper::KeyMapper;
-use addon_core::{OsAdapter, OsPlatform, error::Error};
+use addon_core::{error::Error, OsAdapter, OsPlatform};
 
 // Re-export Win32 types needed by the hook callback.
 use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM, WPARAM};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, GetAsyncKeyState, GetKeyboardLayout, MapVirtualKeyW,
-    SetWindowsHookExW, ToUnicodeEx, UnhookWindowsHookEx,
-    HHOOK, KBDLLHOOKSTRUCT, WH_KEYBOARD_LL,
+    CallNextHookEx, GetAsyncKeyState, GetKeyboardLayout, MapVirtualKeyW, SetWindowsHookExW,
+    ToUnicodeEx, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, WH_KEYBOARD_LL,
 };
 
 /// Size of a `KBDLLHOOKSTRUCT` in bytes.
@@ -96,20 +95,16 @@ impl WindowsAdapter {
         }
 
         let hook = unsafe {
-            SetWindowsHookExW(
-                WH_KEYBOARD_LL,
-                Some(hook_callback),
-                std::ptr::null_mut(),
-                0,
-            )
+            SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_callback), std::ptr::null_mut(), 0)
         };
 
         if hook.is_null() {
             let err = std::io::Error::last_os_error();
             tracing::error!("SetWindowsHookExW failed: {}", err);
-            return Err(Error::AdapterNotAvailable(
-                format!("Failed to install keyboard hook: {}", err),
-            ));
+            return Err(Error::AdapterNotAvailable(format!(
+                "Failed to install keyboard hook: {}",
+                err
+            )));
         }
 
         self.hook = Some(hook);
@@ -212,7 +207,11 @@ extern "system" fn hook_callback(n_code: i32, w_param: WPARAM, l_param: LPARAM) 
         // In a real implementation, the adapter would maintain a global
         // table of registered hotkeys and look up the callback here.
         // For now, log the detected stroke.
-        tracing::info!("Keyboard event detected: vk=0x{:02X} → {}", vk_code, stroke.display());
+        tracing::info!(
+            "Keyboard event detected: vk=0x{:02X} → {}",
+            vk_code,
+            stroke.display()
+        );
     }
 
     // Pass the event to the next hook in the chain.
@@ -224,7 +223,7 @@ extern "system" fn hook_callback(n_code: i32, w_param: WPARAM, l_param: LPARAM) 
 /// This is a simplified translation — a production implementation would
 /// need more sophisticated modifier state tracking.
 fn vk_to_stroke(vk_code: u32, scan_code: u32) -> Option<KeyStroke> {
-    use addon_core::keymap::{Modifier, Key};
+    use addon_core::keymap::{Key, Modifier};
 
     // Determine modifiers by checking async key state.
     let mut modifiers = Vec::new();
@@ -289,32 +288,33 @@ fn vk_to_key_code(vk: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use addon_core::config::KeyBinding;
     use addon_core::actions::Action;
+    use addon_core::config::KeyBinding;
 
     fn test_config() -> Config {
         Config {
             version: "1.0".to_string(),
             global: addon_core::config::GlobalSettings::default(),
-            keybindings: vec![
-                KeyBinding {
-                    id: "test_paste".to_string(),
-                    keys: vec!["Ctrl+V".to_string()],
-                    action: Action::Paste {
-                        text: "hello".to_string(),
-                    },
-                    overrides: None,
+            keybindings: vec![KeyBinding {
+                id: "test_paste".to_string(),
+                keys: vec!["Ctrl+V".to_string()],
+                action: Action::Paste {
+                    text: "hello".to_string(),
                 },
-            ],
+                overrides: None,
+            }],
         }
     }
 
     #[test]
     fn test_keymap_build() {
         let config = test_config();
-        let mut adapter = WindowsAdapter::new(config, Box::new(WindowsKeyMapper {
-            map: std::collections::HashMap::new(),
-        }));
+        let mut adapter = WindowsAdapter::new(
+            config,
+            Box::new(WindowsKeyMapper {
+                map: std::collections::HashMap::new(),
+            }),
+        );
         adapter.build_keymap();
 
         let stroke = KeyStroke::parse("Ctrl+V").unwrap();
@@ -324,9 +324,12 @@ mod tests {
     #[test]
     fn test_keymap_missing() {
         let config = test_config();
-        let mut adapter = WindowsAdapter::new(config, Box::new(WindowsKeyMapper {
-            map: std::collections::HashMap::new(),
-        }));
+        let mut adapter = WindowsAdapter::new(
+            config,
+            Box::new(WindowsKeyMapper {
+                map: std::collections::HashMap::new(),
+            }),
+        );
         adapter.build_keymap();
 
         let stroke = KeyStroke::parse("Ctrl+X").unwrap();
@@ -336,9 +339,12 @@ mod tests {
     #[test]
     fn test_platform() {
         let config = test_config();
-        let adapter = WindowsAdapter::new(config, Box::new(WindowsKeyMapper {
-            map: std::collections::HashMap::new(),
-        }));
+        let adapter = WindowsAdapter::new(
+            config,
+            Box::new(WindowsKeyMapper {
+                map: std::collections::HashMap::new(),
+            }),
+        );
         assert_eq!(adapter.get_platform(), OsPlatform::Windows);
     }
 

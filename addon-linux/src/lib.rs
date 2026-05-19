@@ -14,13 +14,13 @@
 //!    keymap and dispatched to registered actions.
 
 use std::ffi::c_void;
-use std::os::raw::{c_char, c_int, c_ulong, c_uint};
+use std::os::raw::{c_char, c_int, c_uint, c_ulong};
 use std::ptr::NonNull;
 
 use addon_core::config::Config;
 use addon_core::keymap::KeyStroke;
 use addon_core::mapper::KeyMapper;
-use addon_core::{OsAdapter, OsPlatform, error::Error};
+use addon_core::{error::Error, OsAdapter, OsPlatform};
 
 // ---------------------------------------------------------------------------
 // X11 FFI — opaque pointer types and core functions
@@ -109,12 +109,7 @@ extern "C" {
     ) -> c_int;
 
     // XKB (keycode → keysym translation)
-    fn XkbKeycodeToKeysym(
-        dpy: XDisplay,
-        keycode: c_uint,
-        group: c_int,
-        level: c_int,
-    ) -> XKeysym;
+    fn XkbKeycodeToKeysym(dpy: XDisplay, keycode: c_uint, group: c_int, level: c_int) -> XKeysym;
     fn XKeysymToString(keysym: XKeysym) -> *const c_char;
 }
 
@@ -202,9 +197,8 @@ impl LinuxX11Adapter {
             return Ok(());
         }
 
-        let display_name = std::ffi::CString::new(":0").map_err(|e| {
-            Error::AdapterNotAvailable(format!("Invalid display name: {}", e))
-        })?;
+        let display_name = std::ffi::CString::new(":0")
+            .map_err(|e| Error::AdapterNotAvailable(format!("Invalid display name: {}", e)))?;
 
         let dpy = unsafe { XOpenDisplay(display_name.as_ptr()) };
 
@@ -253,18 +247,19 @@ impl LinuxX11Adapter {
 
     /// Simulates a key press or release via the XTest extension.
     pub fn simulate_key(&self, keycode: c_uint, press: bool) -> Result<(), Error> {
-        let dpy = self.display.as_ref().map(|h| h.as_ptr()).ok_or_else(|| {
-            Error::AdapterNotAvailable("X11 display not open".to_string())
-        })?;
+        let dpy = self
+            .display
+            .as_ref()
+            .map(|h| h.as_ptr())
+            .ok_or_else(|| Error::AdapterNotAvailable("X11 display not open".to_string()))?;
 
-        let result = unsafe {
-            XTestFakeKeyEvent(dpy, keycode, if press { 1 } else { 0 }, 0)
-        };
+        let result = unsafe { XTestFakeKeyEvent(dpy, keycode, if press { 1 } else { 0 }, 0) };
 
         if result == False {
-            return Err(Error::AdapterNotAvailable(
-                format!("XTestFakeKeyEvent failed for keycode {}", keycode),
-            ));
+            return Err(Error::AdapterNotAvailable(format!(
+                "XTestFakeKeyEvent failed for keycode {}",
+                keycode
+            )));
         }
 
         Ok(())
@@ -272,15 +267,17 @@ impl LinuxX11Adapter {
 
     /// Grabs the keyboard to capture all key events globally.
     fn grab_keyboard(&mut self) -> Result<(), Error> {
-        let dpy = self.display.as_ref().map(|h| h.as_ptr()).ok_or_else(|| {
-            Error::AdapterNotAvailable("X11 display not open".to_string())
-        })?;
+        let dpy = self
+            .display
+            .as_ref()
+            .map(|h| h.as_ptr())
+            .ok_or_else(|| Error::AdapterNotAvailable("X11 display not open".to_string()))?;
 
         let result = unsafe {
             XGrabKeyboard(
                 dpy,
                 RevertToRoot,
-                1,    // owner_events: allow pointer events to pass through
+                1, // owner_events: allow pointer events to pass through
                 PointerModeAsync,
                 KeyboardModeAsync,
                 0,
@@ -354,32 +351,33 @@ impl KeyMapper for LinuxX11KeyMapper {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use addon_core::config::KeyBinding;
     use addon_core::actions::Action;
+    use addon_core::config::KeyBinding;
 
     fn test_config() -> Config {
         Config {
             version: "1.0".to_string(),
             global: addon_core::config::GlobalSettings::default(),
-            keybindings: vec![
-                KeyBinding {
-                    id: "test_paste".to_string(),
-                    keys: vec!["Ctrl+V".to_string()],
-                    action: Action::Paste {
-                        text: "hello".to_string(),
-                    },
-                    overrides: None,
+            keybindings: vec![KeyBinding {
+                id: "test_paste".to_string(),
+                keys: vec!["Ctrl+V".to_string()],
+                action: Action::Paste {
+                    text: "hello".to_string(),
                 },
-            ],
+                overrides: None,
+            }],
         }
     }
 
     #[test]
     fn test_keymap_build() {
         let config = test_config();
-        let mut adapter = LinuxX11Adapter::new(config, Box::new(LinuxX11KeyMapper {
-            map: std::collections::HashMap::new(),
-        }));
+        let mut adapter = LinuxX11Adapter::new(
+            config,
+            Box::new(LinuxX11KeyMapper {
+                map: std::collections::HashMap::new(),
+            }),
+        );
         adapter.build_keymap();
 
         let stroke = KeyStroke::parse("Ctrl+V").unwrap();
@@ -389,9 +387,12 @@ mod tests {
     #[test]
     fn test_keymap_missing() {
         let config = test_config();
-        let mut adapter = LinuxX11Adapter::new(config, Box::new(LinuxX11KeyMapper {
-            map: std::collections::HashMap::new(),
-        }));
+        let mut adapter = LinuxX11Adapter::new(
+            config,
+            Box::new(LinuxX11KeyMapper {
+                map: std::collections::HashMap::new(),
+            }),
+        );
         adapter.build_keymap();
 
         let stroke = KeyStroke::parse("Ctrl+X").unwrap();
@@ -401,9 +402,12 @@ mod tests {
     #[test]
     fn test_platform() {
         let config = test_config();
-        let adapter = LinuxX11Adapter::new(config, Box::new(LinuxX11KeyMapper {
-            map: std::collections::HashMap::new(),
-        }));
+        let adapter = LinuxX11Adapter::new(
+            config,
+            Box::new(LinuxX11KeyMapper {
+                map: std::collections::HashMap::new(),
+            }),
+        );
         assert_eq!(adapter.get_platform(), OsPlatform::Linux);
     }
 }

@@ -1,7 +1,6 @@
 //! Common logging initialization.
 //!
 /// Sets up a [`tracing`] subscriber with reasonable defaults.
-
 use crate::error::Error;
 
 /// Initializes the tracing subscriber.

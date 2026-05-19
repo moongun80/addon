@@ -32,7 +32,10 @@ async fn main() -> Result<()> {
     // 1. Initialize logging.
     // ------------------------------------------------------------------
     log::init().context("failed to initialize logging")?;
-    info!("addon daemon starting — version {}", env!("CARGO_PKG_VERSION"));
+    info!(
+        "addon daemon starting — version {}",
+        env!("CARGO_PKG_VERSION")
+    );
 
     // ------------------------------------------------------------------
     // 2. Load configuration.
@@ -52,10 +55,7 @@ async fn main() -> Result<()> {
     // ------------------------------------------------------------------
     let conflicts = addon_core::conflict::detect_conflicts(&config.keybindings);
     if !conflicts.is_empty() {
-        warn!(
-            "{} key binding conflict(s) detected",
-            conflicts.len()
-        );
+        warn!("{} key binding conflict(s) detected", conflicts.len());
         for c in &conflicts {
             warn!(
                 "  - {} ↔ {} [platform: {:?}]",
@@ -182,7 +182,9 @@ fn create_adapter(_config: addon_core::config::Config) -> Result<Box<dyn addon_c
     #[cfg(feature = "windows")]
     {
         let mapper = build_keymapper(&_config);
-        return Ok(Box::new(addon_windows::WindowsAdapter::new(_config, mapper)));
+        return Ok(Box::new(addon_windows::WindowsAdapter::new(
+            _config, mapper,
+        )));
     }
 
     #[cfg(not(any(feature = "linux", feature = "macos", feature = "windows")))]
@@ -196,7 +198,6 @@ fn create_adapter(_config: addon_core::config::Config) -> Result<Box<dyn addon_c
 /// Builds a key mapper from the configuration.
 #[allow(dead_code)]
 fn build_keymapper(config: &addon_core::config::Config) -> Box<dyn addon_core::mapper::KeyMapper> {
-
     let mut map: HashMap<addon_core::keymap::KeyStroke, addon_core::actions::Action> =
         HashMap::new();
 
@@ -231,7 +232,10 @@ struct DaemonKeyMapper {
 }
 
 impl addon_core::mapper::KeyMapper for DaemonKeyMapper {
-    fn lookup(&self, stroke: &addon_core::keymap::KeyStroke) -> Option<&addon_core::actions::Action> {
+    fn lookup(
+        &self,
+        stroke: &addon_core::keymap::KeyStroke,
+    ) -> Option<&addon_core::actions::Action> {
         self.map.get(stroke)
     }
 }

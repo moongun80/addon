@@ -1,16 +1,54 @@
+# Rust
 target/
 **/*.rs.bk
+*.rlib
+*.d
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# Logs
 *.log
+*.tmp
+
+# Config files with secrets
+.env
+.env.local
+secrets.yaml
+
+# Build artifacts
+dist/
+build/
+*.app
+*.dmg
+*.deb
+*.rpm
+*.msi
+*.AppImage
+
+# Tauri
+addon-gui/src-tauri/target/
+addon-gui/src-tauri/gen/
+addon-gui/src-tauri/capabilities/
+
+# Generated
+addon-gui/src-tauri/icons/
+
+# Python (if any)
 *.egg-info/
 .eggs/
 dist/
 build/
 *.pyc
 __pycache__/
-.env
 .venv/
 venv/
-*.so
-*.dylib
-*.dll
-*.exe

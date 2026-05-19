@@ -2,7 +2,6 @@
 //!
 /// Provides [`detect_conflicts`] which scans a list of key bindings and
 /// returns any overlapping key strokes per platform.
-
 use crate::config::KeyBinding;
 
 /// A detected conflict between two key bindings.
@@ -48,14 +47,17 @@ pub fn detect_conflicts(keybindings: &[KeyBinding]) -> Vec<Conflict> {
         if let Some(ref overrides) = binding.overrides {
             if let Some(ref macos_keys) = overrides.macos {
                 for key in macos_keys {
-                    let entry = lookup.entry((Some("macos".to_string()), key.clone())).or_default();
+                    let entry = lookup
+                        .entry((Some("macos".to_string()), key.clone()))
+                        .or_default();
                     entry.push(binding.id.clone());
                 }
             }
             if let Some(ref windows_keys) = overrides.windows {
                 for key in windows_keys {
-                    let entry =
-                        lookup.entry((Some("windows".to_string()), key.clone())).or_default();
+                    let entry = lookup
+                        .entry((Some("windows".to_string()), key.clone()))
+                        .or_default();
                     entry.push(binding.id.clone());
                 }
             }
@@ -84,8 +86,8 @@ pub fn detect_conflicts(keybindings: &[KeyBinding]) -> Vec<Conflict> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, GlobalSettings, KeyBinding};
     use crate::actions::Action;
+    use crate::config::{Config, GlobalSettings, KeyBinding};
 
     fn sample_binding(id: &str, keys: &[&str]) -> KeyBinding {
         KeyBinding {

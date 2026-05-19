@@ -18,3 +18,4 @@ tokio.workspace = true
 async-trait.workspace = true
 dirs.workspace = true
 anyhow.workspace = true
+cfg-if = "1"

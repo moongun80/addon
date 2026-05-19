@@ -2,7 +2,6 @@
 //!
 /// Defines the [`Error`] enum used throughout the crate for consistent
 /// error handling.
-
 use thiserror::Error;
 
 /// The primary error type for the addon core.

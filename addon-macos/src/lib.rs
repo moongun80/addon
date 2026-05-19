@@ -12,11 +12,11 @@
 
 use std::sync::Arc;
 
+use addon_core::actions::Action;
+use addon_core::config::Config;
 use addon_core::keymap::KeyStroke;
 use addon_core::mapper::KeyMapper;
-use addon_core::actions::Action;
-use addon_core::{OsAdapter, OsPlatform, error::Error};
-use addon_core::config::Config;
+use addon_core::{error::Error, OsAdapter, OsPlatform};
 
 mod hotkey;
 pub use hotkey::HotKey;
@@ -58,17 +58,20 @@ impl MacOsAdapter {
                         let binding_id = binding.id.clone();
                         let action = binding.action.clone();
 
-                        let hotkey = HotKey::new(stroke.clone(), Box::new(move |s: &KeyStroke| {
-                            tracing::info!(
-                                "Hotkey fired: {} (binding: {})",
-                                s.display(),
-                                binding_id
-                            );
-                            // In a real implementation, actions would be
-                            // dispatched here via an async channel or executor.
-                            // For now, log what action would be performed.
-                            tracing::info!("Would execute action: {:?}", action);
-                        }))
+                        let hotkey = HotKey::new(
+                            stroke.clone(),
+                            Box::new(move |s: &KeyStroke| {
+                                tracing::info!(
+                                    "Hotkey fired: {} (binding: {})",
+                                    s.display(),
+                                    binding_id
+                                );
+                                // In a real implementation, actions would be
+                                // dispatched here via an async channel or executor.
+                                // For now, log what action would be performed.
+                                tracing::info!("Would execute action: {:?}", action);
+                            }),
+                        )
                         .ok_or_else(|| {
                             Error::AdapterNotAvailable(format!(
                                 "Failed to register hotkey: {}",
@@ -167,32 +170,33 @@ impl KeyMapper for MacOsKeyMapper {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use addon_core::config::KeyBinding;
     use addon_core::actions::Action;
+    use addon_core::config::KeyBinding;
 
     fn test_config() -> Config {
         Config {
             version: "1.0".to_string(),
             global: addon_core::config::GlobalSettings::default(),
-            keybindings: vec![
-                KeyBinding {
-                    id: "test_paste".to_string(),
-                    keys: vec!["Ctrl+V".to_string()],
-                    action: Action::Paste {
-                        text: "hello".to_string(),
-                    },
-                    overrides: None,
+            keybindings: vec![KeyBinding {
+                id: "test_paste".to_string(),
+                keys: vec!["Ctrl+V".to_string()],
+                action: Action::Paste {
+                    text: "hello".to_string(),
                 },
-            ],
+                overrides: None,
+            }],
         }
     }
 
     #[test]
     fn test_keymap_build() {
         let config = test_config();
-        let mut adapter = MacOsAdapter::new(config, Box::new(MacOsKeyMapper {
-            map: std::collections::HashMap::new(),
-        }));
+        let mut adapter = MacOsAdapter::new(
+            config,
+            Box::new(MacOsKeyMapper {
+                map: std::collections::HashMap::new(),
+            }),
+        );
         adapter.build_keymap();
 
         let stroke = KeyStroke::parse("Ctrl+V").unwrap();
@@ -202,9 +206,12 @@ mod tests {
     #[test]
     fn test_keymap_missing() {
         let config = test_config();
-        let mut adapter = MacOsAdapter::new(config, Box::new(MacOsKeyMapper {
-            map: std::collections::HashMap::new(),
-        }));
+        let mut adapter = MacOsAdapter::new(
+            config,
+            Box::new(MacOsKeyMapper {
+                map: std::collections::HashMap::new(),
+            }),
+        );
         adapter.build_keymap();
 
         let stroke = KeyStroke::parse("Ctrl+X").unwrap();
@@ -214,9 +221,12 @@ mod tests {
     #[test]
     fn test_platform() {
         let config = test_config();
-        let adapter = MacOsAdapter::new(config, Box::new(MacOsKeyMapper {
-            map: std::collections::HashMap::new(),
-        }));
+        let adapter = MacOsAdapter::new(
+            config,
+            Box::new(MacOsKeyMapper {
+                map: std::collections::HashMap::new(),
+            }),
+        );
         assert_eq!(adapter.get_platform(), OsPlatform::Macos);
     }
 }

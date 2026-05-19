@@ -20,10 +20,7 @@ pub struct DaemonState {
 pub type DaemonStateHandle = Arc<Mutex<DaemonState>>;
 
 /// Create the initial daemon state from a config and OS adapter.
-pub fn create_daemon_state(
-    config: Config,
-    adapter: Box<dyn OsAdapter>,
-) -> DaemonStateHandle {
+pub fn create_daemon_state(config: Config, adapter: Box<dyn OsAdapter>) -> DaemonStateHandle {
     Arc::new(Mutex::new(DaemonState {
         running: false,
         config,

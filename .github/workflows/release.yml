@@ -1,0 +1,90 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Release (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+          - x86_64-pc-windows-msvc
+    
+    runs-on: ${{ matrix.target == 'x86_64-pc-windows-msvc' && 'windows-latest' || 'ubuntu-latest' }}
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      
+      - name: Linux deps
+        if: contains(matrix.target, 'linux')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxext-dev libxinput-dev libxtst-dev
+      
+      - name: Build daemon
+        run: |
+          cargo build --release --target ${{ matrix.target }} -p addon-daemon
+      
+      - name: Package (Linux)
+        if: contains(matrix.target, 'linux')
+        run: |
+          BIN="target/${{ matrix.target }}/release/addon"
+          echo "Created addon binary for ${{ matrix.target }}"
+          ls -lh "$BIN"
+      
+      - name: Package (macOS)
+        if: contains(matrix.target, 'apple')
+        run: |
+          BIN="target/${{ matrix.target }}/release/addon"
+          echo "Created addon binary for ${{ matrix.target }}"
+          ls -lh "$BIN"
+      
+      - name: Package (Windows)
+        if: contains(matrix.target, 'windows')
+        run: |
+          Copy-Item "target/${{ matrix.target }}/release/addon.exe" .
+          echo "Created addon binary for ${{ matrix.target }}"
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: addon-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target }}/release/addon*
+            addon.exe
+          retention-days: 5
+
+  create-release:
+    name: Create GitHub Release
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: artifacts/**/addon*

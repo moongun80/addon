@@ -6,11 +6,11 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use tokio::net::{UnixListener, UnixStream};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+use tokio::net::{UnixListener, UnixStream};
 
-use addon_core::ipc::{IpcMessage, IpcRequest, IpcResponse};
 use crate::daemon::DaemonState;
+use addon_core::ipc::{IpcMessage, IpcRequest, IpcResponse};
 
 // ---------------------------------------------------------------------------
 // Socket path
@@ -115,20 +115,15 @@ async fn handle_client(
 }
 
 /// Process a single client request and produce a response.
-fn process_request(
-    req: &IpcRequest,
-    state: &Arc<Mutex<DaemonState>>,
-) -> IpcMessage {
+fn process_request(req: &IpcRequest, state: &Arc<Mutex<DaemonState>>) -> IpcMessage {
     let mut guard = state.lock().unwrap();
 
     match req {
-        IpcRequest::GetStatus => {
-            IpcMessage::response(IpcResponse::DaemonStatus {
-                running: guard.running,
-                pid: std::process::id(),
-                version: env!("CARGO_PKG_VERSION").to_string(),
-            })
-        }
+        IpcRequest::GetStatus => IpcMessage::response(IpcResponse::DaemonStatus {
+            running: guard.running,
+            pid: std::process::id(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+        }),
 
         IpcRequest::StartDaemon => {
             if guard.running {
@@ -194,15 +189,13 @@ fn process_request(
             }
         }
 
-        IpcRequest::ReloadConfig => {
-            match reload_config_inner(&mut guard) {
-                Ok(keys) => IpcMessage::response(IpcResponse::ConfigLoaded { keys }),
-                Err(e) => IpcMessage::response(IpcResponse::Error {
-                    code: "RELOAD_ERROR".to_string(),
-                    details: e,
-                }),
-            }
-        }
+        IpcRequest::ReloadConfig => match reload_config_inner(&mut guard) {
+            Ok(keys) => IpcMessage::response(IpcResponse::ConfigLoaded { keys }),
+            Err(e) => IpcMessage::response(IpcResponse::Error {
+                code: "RELOAD_ERROR".to_string(),
+                details: e,
+            }),
+        },
 
         IpcRequest::TestShortcut { keys, action: _ } => {
             let mut all_ok = true;
@@ -235,7 +228,9 @@ fn process_request(
 }
 
 /// Reload configuration from disk (internal, requires mutable state).
-fn reload_config_inner(guard: &mut DaemonState) -> Result<Vec<addon_core::ipc::KeyBindingJson>, String> {
+fn reload_config_inner(
+    guard: &mut DaemonState,
+) -> Result<Vec<addon_core::ipc::KeyBindingJson>, String> {
     let path = get_config_path().map_err(|e| e.to_string())?;
     let new_config = addon_core::config::load(&path).map_err(|e| e.to_string())?;
 
@@ -245,7 +240,9 @@ fn reload_config_inner(guard: &mut DaemonState) -> Result<Vec<addon_core::ipc::K
         for c in &conflicts {
             tracing::warn!(
                 "Conflict: {} ↔ {} [platform: {:?}]",
-                c.binding1, c.binding2, c.platform
+                c.binding1,
+                c.binding2,
+                c.platform
             );
         }
     }
@@ -278,8 +275,13 @@ fn cfg_keys_from_json(json: &serde_json::Value) -> Vec<addon_core::ipc::KeyBindi
             return bindings
                 .iter()
                 .filter_map(|b| {
-                    let id = b.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let keys = b.get("keys")
+                    let id = b
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let keys = b
+                        .get("keys")
                         .and_then(|v| v.as_array())
                         .map(|a| {
                             a.iter()
@@ -287,12 +289,21 @@ fn cfg_keys_from_json(json: &serde_json::Value) -> Vec<addon_core::ipc::KeyBindi
                                 .collect::<Vec<_>>()
                         })
                         .unwrap_or_default();
-                    let action_type = b.get("type")
+                    let action_type = b
+                        .get("type")
                         .and_then(|v| v.as_str())
-                        .or_else(|| b.get("action").and_then(|a| a.get("type")).and_then(|v| v.as_str()))
+                        .or_else(|| {
+                            b.get("action")
+                                .and_then(|a| a.get("type"))
+                                .and_then(|v| v.as_str())
+                        })
                         .unwrap_or("unknown")
                         .to_string();
-                    Some(addon_core::ipc::KeyBindingJson { id, keys, action_type })
+                    Some(addon_core::ipc::KeyBindingJson {
+                        id,
+                        keys,
+                        action_type,
+                    })
                 })
                 .collect();
         }

@@ -98,10 +98,7 @@ fn modifiers_to_cocoa(modifiers: &[KeyStroke]) -> c_uint {
 
 impl HotKey {
     /// Creates a new hotkey and registers it with the Carbon event system.
-    pub fn new(
-        key_stroke: KeyStroke,
-        callback: Box<dyn Fn(&KeyStroke) + Send>,
-    ) -> Option<Self> {
+    pub fn new(key_stroke: KeyStroke, callback: Box<dyn Fn(&KeyStroke) + Send>) -> Option<Self> {
         let id = HotKeyId {
             creator: CREATOR,
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
@@ -164,9 +161,8 @@ impl Drop for HotKey {
 // ---------------------------------------------------------------------------
 
 /// Global table mapping HotKeyId → KeyStroke for callback dispatch.
-static KEY_STROKES: std::sync::Mutex<
-    std::collections::HashMap<HotKeyId, KeyStroke>,
-> = std::sync::Mutex::new(std::collections::HashMap::new());
+static KEY_STROKES: std::sync::Mutex<std::collections::HashMap<HotKeyId, KeyStroke>> =
+    std::sync::Mutex::new(std::collections::HashMap::new());
 
 /// Callback table for hotkey IDs.
 static CALLBACKS: std::sync::Mutex<
@@ -174,7 +170,11 @@ static CALLBACKS: std::sync::Mutex<
 > = std::sync::Mutex::new(std::collections::HashMap::new());
 
 /// Registers a callback for the given hotkey ID and key stroke.
-fn register_callback(id: HotKeyId, key_stroke: KeyStroke, callback: Box<dyn Fn(&KeyStroke) + Send>) {
+fn register_callback(
+    id: HotKeyId,
+    key_stroke: KeyStroke,
+    callback: Box<dyn Fn(&KeyStroke) + Send>,
+) {
     KEY_STROKES.lock().unwrap().insert(id, key_stroke);
     CALLBACKS.lock().unwrap().insert(id, callback);
 }
