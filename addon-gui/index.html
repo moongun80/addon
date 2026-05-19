@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>addon</title>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { font-family: system-ui, sans-serif; background:#0d1117; color:#c9d1d9; padding:20px; }
+    .app { max-width:800px; margin:0 auto; }
+    h1 { color:#58a6ff; margin-bottom:4px; }
+    .subtitle { color:#8b949e; margin-bottom:20px; }
+    .card { background:#161b22; border:1px solid #30363d; border-radius:8px; padding:16px; margin-bottom:12px; }
+    .binding { display:flex; justify-content:space-between; align-items:center; padding:10px; border-bottom:1px solid #21262d; }
+    .binding:last-child { border-bottom:none; }
+    .keys { background:#0d419d; color:#79c0ff; padding:2px 8px; border-radius:4px; font-family:monospace; font-size:13px; }
+    .action { color:#8b949e; font-size:13px; }
+    .btn { background:#238636; color:white; border:none; padding:6px 12px; border-radius:6px; cursor:pointer; font-size:13px; margin-left:8px; }
+    .btn:hover { background:#2ea043; }
+    .btn-danger { background:#da3633; }
+    .btn-danger:hover { background:#f85149; }
+    .btn-sm { padding:3px 8px; font-size:12px; }
+    input, select { background:#0d1117; border:1px solid #30363d; color:#c9d1d9; padding:8px; border-radius:6px; width:100%; margin-bottom:8px; font-size:14px; }
+    input::placeholder { color:#484f58; }
+    .status { padding:10px; border-radius:8px; margin-bottom:16px; font-size:14px; }
+    .status.running { background:#0d2818; color:#3fb950; border:1px solid #238636; }
+    .status.stopped { background:#2d1215; color:#f85149; border:1px solid #da3633; }
+    .form-row { display:flex; gap:8px; margin-bottom:8px; }
+    .form-row > * { flex:1; }
+    label { font-size:13px; color:#8b949e; margin-bottom:2px; display:block; }
+  </style>
+</head>
+<body>
+  <div id="app" class="app">
+    <h1>🔑 addon</h1>
+    <p class="subtitle">Key Shortcut Sync Tool</p>
+    
+    <div :class="['status', daemon.running ? 'running' : 'stopped']">
+      {{ daemon.running ? '✅ Daemon Running (PID ' + daemon.pid + ')' : '❌ Daemon Stopped' }}
+    </div>
+    
+    <div class="card">
+      <h3 style="margin-bottom:8px;">Key Bindings</h3>
+      <div v-if="bindings.length === 0" style="color:#484f58;">No bindings yet. Add one below.</div>
+      <div v-for="b in bindings" :key="b.id" class="binding">
+        <div>
+          <strong>{{ b.id }}</strong>
+          <span class="keys">{{ b.keys.join(' + ') }}</span>
+          <span class="action">→ {{ b.action_type }}</span>
+        </div>
+        <div>
+          <button class="btn btn-sm" @click="testBinding(b)">Test</button>
+          <button class="btn btn-sm btn-danger" @click="removeBinding(b)">Remove</button>
+        </div>
+      </div>
+    </div>
+    
+    <div class="card">
+      <h3 style="margin-bottom:12px;">Add Binding</h3>
+      <div class="form-row">
+        <div>
+          <label>ID</label>
+          <input v-model="form.id" placeholder="copy-vim">
+        </div>
+      </div>
+      <div class="form-row">
+        <div>
+          <label>Keys (comma separated)</label>
+          <input v-model="form.keys" placeholder="Ctrl, Shift, V">
+        </div>
+      </div>
+      <div class="form-row">
+        <div>
+          <label>Action Type</label>
+          <select v-model="form.actionType">
+            <option value="paste">Paste</option>
+            <option value="launch">Launch</option>
+            <option value="remap">Remap</option>
+            <option value="shortcut">Shortcut</option>
+            <option value="system">System Command</option>
+          </select>
+        </div>
+      </div>
+      <button class="btn" @click="addBinding">Add</button>
+    </div>
+    
+    <div class="card" style="display:flex; gap:8px;">
+      <button class="btn" @click="exportConfig('yaml')">Export YAML</button>
+      <button class="btn" @click="exportConfig('json')">Export JSON</button>
+      <button class="btn" @click="reloadDaemon" style="background:#1f6feb;">Reload Daemon</button>
+    </div>
+    
+    <div v-if="testMsg" class="card" style="background:#161b22; border-color:#3fb950;">
+      <p>{{ testMsg }}</p>
+    </div>
+  </div>
+  
+  <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+  <script>
+    const { createApp } = Vue;
+    const { invoke } = window.__TAURI__.core;
+    
+    createApp({
+      data() {
+        return {
+          daemon: { running: false, pid: 0 },
+          bindings: [],
+          form: { id: '', keys: '', actionType: 'paste' },
+          testMsg: ''
+        };
+      },
+      async mounted() { await this.refresh(); },
+      methods: {
+        async refresh() {
+          const status = await invoke('get_daemon_status');
+          if(status.type === 'daemon_status') { this.daemon.running = status.running; this.daemon.pid = status.pid; }
+          this.bindings = (await invoke('list_keybindings')) || [];
+        },
+        async addBinding() {
+          try {
+            const r = await invoke('add_keybinding', { id: this.form.id, keys: this.form.keys, actionType: this.form.actionType });
+            this.testMsg = r.message || 'Added!';
+            await this.refresh();
+            this.form = { id: '', keys: '', actionType: 'paste' };
+          } catch(e) { this.testMsg = 'Error: ' + e; }
+        },
+        async removeBinding(b) {
+          try { const r = await invoke('remove_keybinding', { id: b.id }); this.testMsg = r.message; await this.refresh(); }
+          catch(e) { this.testMsg = 'Error: ' + e; }
+        },
+        async testBinding(b) {
+          try { const r = await invoke('test_shortcut', { keys: b.keys, action: {type:'paste',text:'test'}}); this.testMsg = r.message || r.details || 'Test sent'; }
+          catch(e) { this.testMsg = 'Error: ' + e; }
+        },
+        async exportConfig(fmt) {
+          try { const content = await invoke('export_config', { format: fmt });
+            const blob = new Blob([content], {type:'text/plain'});
+            const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'config.' + fmt; a.click();
+          } catch(e) { this.testMsg = 'Error: ' + e; }
+        },
+        async reloadDaemon() {
+          try { this.testMsg = 'Reloading...'; await invoke('reload_config'); this.testMsg = 'Daemon reloaded!'; }
+          catch(e) { this.testMsg = 'Error: ' + e; }
+        }
+      }
+    }).mount('#app');
+  </script>
+</body>
+</html>

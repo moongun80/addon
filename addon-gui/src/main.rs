@@ -1,10 +1,32 @@
-//! # addon-gui
-//!
-//! GUI application for the addon — configuration management interface.
-//!
-//! Note: This crate is intentionally excluded from the workspace members
-//! list until a GUI framework (Tauri, Druid, egui) is chosen.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod commands;
+mod config_ops;
+mod tray;
+
+use tauri::Manager;
 
 fn main() {
-    println!("addon-gui is not yet integrated into the workspace.");
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive("info".parse().unwrap()),
+        )
+        .init();
+
+    tauri::Builder::default()
+        .setup(|app| {
+            tray::create_tray(app.handle())?;
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::get_daemon_status,
+            commands::reload_config,
+            commands::test_shortcut,
+            commands::list_keybindings,
+            commands::add_keybinding,
+            commands::remove_keybinding,
+            commands::export_config,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running addon GUI");
 }

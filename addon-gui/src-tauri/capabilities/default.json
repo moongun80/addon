@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "Default Tauri 2 capability",
+  "windows": ["main"],
+  "permissions": ["core:default", "shell:allow-open"]
+}
