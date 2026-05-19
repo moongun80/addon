@@ -73,19 +73,7 @@ impl WindowsAdapter {
 
     /// Rebuilds the keymap from the current configuration.
     fn build_keymap(&mut self) {
-        let mut map: std::collections::HashMap<KeyStroke, addon_core::actions::Action> =
-            std::collections::HashMap::new();
-
-        for binding in &self.config.keybindings {
-            let keys = binding.effective_keys("windows");
-            for key_str in keys {
-                if let Ok(stroke) = KeyStroke::parse(key_str) {
-                    map.insert(stroke, binding.action.clone());
-                }
-            }
-        }
-
-        self.keymap = Box::new(WindowsKeyMapper { map });
+        self.keymap = self.config.build_keymapper(OsPlatform::Windows);
     }
 
     /// Installs the low-level keyboard hook.

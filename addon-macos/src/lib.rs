@@ -51,7 +51,7 @@ impl MacOsAdapter {
         self.build_keymap();
 
         for binding in &self.config.keybindings {
-            let keys = binding.effective_keys("macos");
+            let keys = binding.effective_keys(OsPlatform::Macos);
             for key_str in keys {
                 match KeyStroke::parse(key_str) {
                     Ok(stroke) => {
@@ -94,20 +94,7 @@ impl MacOsAdapter {
 
     /// Rebuilds the keymap from the current configuration.
     fn build_keymap(&mut self) {
-        // Build a simple lookup map from config.
-        let mut map: std::collections::HashMap<KeyStroke, Action> =
-            std::collections::HashMap::new();
-
-        for binding in &self.config.keybindings {
-            let keys = binding.effective_keys("macos");
-            for key_str in keys {
-                if let Ok(stroke) = KeyStroke::parse(key_str) {
-                    map.insert(stroke, binding.action.clone());
-                }
-            }
-        }
-
-        self.keymap = Box::new(MacOsKeyMapper { map });
+        self.keymap = self.config.build_keymapper(OsPlatform::Macos);
     }
 }
 
