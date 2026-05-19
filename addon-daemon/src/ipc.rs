@@ -179,6 +179,23 @@ fn process_request(req: &IpcRequest, state: &Arc<Mutex<DaemonState>>) -> IpcMess
         IpcRequest::SetConfig { config: json } => {
             match serde_json::from_value::<DaemonConfig>(json.clone()) {
                 Ok(_cfg) => {
+                    // Try to parse as full Config and update daemon state
+                    if let Ok(new_config) = serde_json::from_value::<addon_core::config::Config>(json.clone()) {
+                        guard.config = new_config.clone();
+                        // Rebuild adapter (stop → init → start) if running.
+                        // macOS/Windows: init() calls build_keymap() → new keymap applied.
+                        // Linux: keymap built in constructor, but init() still cleans up state.
+                        if let Some(ref mut adapter) = guard.adapter {
+                            if let Err(e) = adapter.stop() {
+                                tracing::warn!("Failed to stop adapter during SetConfig: {e}");
+                            }
+                            if let Err(e) = adapter.init() {
+                                tracing::warn!("Failed to reinit adapter during SetConfig: {e}");
+                            } else if let Err(e) = adapter.start() {
+                                tracing::warn!("Failed to restart adapter during SetConfig: {e}");
+                            }
+                        }
+                    }
                     let keys = cfg_keys_from_json(json);
                     IpcMessage::response(IpcResponse::ConfigLoaded { keys })
                 }

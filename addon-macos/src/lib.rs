@@ -102,9 +102,10 @@ impl OsAdapter for MacOsAdapter {
     fn init(&mut self) -> Result<(), Error> {
         tracing::info!("Initializing macOS adapter");
 
-        // Request accessibility permission (placeholder — real implementation
-        // would use AXIsProcessTrusted or equivalent).
-        //
+        // Rebuild keymap from current config (ensures consistency between
+        // config and keymap when re-initializing after SetConfig).
+        self.build_keymap();
+
         // Register all key bindings.
         self.register_bindings()?;
 

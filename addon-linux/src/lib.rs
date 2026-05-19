@@ -140,14 +140,6 @@ const XI_RAW_KEY_RELEASE: c_int = 239;
 #[allow(dead_code)]
 const XI_HIERARCHY_CHANGED: c_int = 17;
 
-// XEvent type constants
-#[allow(dead_code)]
-const KEY_PRESS: c_int = 2;
-#[allow(dead_code)]
-const KEY_RELEASE: c_int = 3;
-#[allow(dead_code)]
-const GENERIC_EVENT: c_int = 34;
-
 // ---------------------------------------------------------------------------
 // Thread-safe X11 display wrapper
 // ---------------------------------------------------------------------------

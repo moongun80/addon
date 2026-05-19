@@ -1,10 +1,27 @@
 pub fn get_config_path() -> String {
-    let config_dir = dirs::config_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-    config_dir
-        .join("addon")
-        .join("config.yaml")
-        .to_string_lossy()
-        .into_owned()
+    // 1. Check ADDON_CONFIG env var first
+    if let Ok(path) = std::env::var("ADDON_CONFIG") {
+        return path;
+    }
+
+    // 2. Try XDG config directory (~/.config/addon/config.yaml)
+    if let Some(config_dir) = dirs::config_dir() {
+        let xdg = config_dir.join("addon").join("config.yaml");
+        if xdg.exists() {
+            return xdg.to_string_lossy().into_owned();
+        }
+    }
+
+    // 3. Fallback to home directory (~/.addon/config.yaml)
+    if let Some(home) = dirs::home_dir() {
+        let home_config = home.join(".addon").join("config.yaml");
+        if home_config.exists() {
+            return home_config.to_string_lossy().into_owned();
+        }
+    }
+
+    // 4. Final fallback: current directory
+    String::from("./config.yaml")
 }
 
 pub fn load_config(path: &str) -> Result<String, anyhow::Error> {

@@ -92,7 +92,12 @@ pub enum IpcResponse {
 ///
 /// The `kind` field distinguishes requests from responses; within each
 /// kind the inner enum provides further discrimination.
+///
+/// Supports two JSON formats for backward compatibility:
+/// - **Envelope**: `{ "kind": "request", "Request": { "type": "get_status" } }`
+/// - **Untagged**: `{ "type": "get_status" }` (shorthand for `Request`)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
 pub enum IpcMessage {
     /// A request from the GUI to the daemon.
     Request(IpcRequest),

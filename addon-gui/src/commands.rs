@@ -1,47 +1,17 @@
-use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum IpcMessage {
-    GetStatus,
-    SetConfig {
-        config: serde_json::Value,
-    },
-    ReloadConfig,
-    TestShortcut {
-        keys: Vec<String>,
-        action: serde_json::Value,
-    },
-    DaemonStatus {
-        running: bool,
-        pid: u32,
-    },
-    ConfigLoaded {
-        keys: Vec<KeyBindingJson>,
-    },
-    TestResult {
-        success: bool,
-        message: String,
-    },
-    Error {
-        code: String,
-        details: String,
-    },
-}
+use addon_core::ipc::{IpcMessage, IpcRequest, IpcResponse, KeyBindingJson};
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct KeyBindingJson {
-    pub id: String,
-    pub keys: Vec<String>,
-    pub action_type: String,
+fn get_socket_path() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join("addon");
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join("daemon.sock")
 }
-
-const SOCKET_PATH: &str = "/tmp/addon.sock";
 
 fn send_sync(msg: &IpcMessage) -> Result<IpcMessage, anyhow::Error> {
-    let mut stream = TcpStream::connect(SOCKET_PATH)?;
+    let socket = get_socket_path();
+    let mut stream = TcpStream::connect(socket)?;
     let json = serde_json::to_string(msg)?;
     stream.write_all(json.as_bytes())?;
     stream.flush()?;
@@ -66,9 +36,29 @@ fn send_sync(msg: &IpcMessage) -> Result<IpcMessage, anyhow::Error> {
 
 #[tauri::command]
 fn get_daemon_status() -> Result<serde_json::Value, String> {
-    match send_sync(&IpcMessage::GetStatus) {
-        Ok(msg) => Ok(serde_json::to_value(&msg).unwrap()),
-        Err(e) => Ok(serde_json::json!({"type":"error","code":"io","details":e.to_string()})),
+    match send_sync(&IpcMessage::request(IpcRequest::GetStatus)) {
+        Ok(msg) => {
+            if let IpcMessage::Response(IpcResponse::DaemonStatus {
+                running,
+                pid,
+                version,
+            }) = msg
+            {
+                Ok(serde_json::json!({
+                    "type": "daemon_status",
+                    "running": running,
+                    "pid": pid,
+                    "version": version
+                }))
+            } else {
+                Ok(serde_json::to_value(&msg).unwrap())
+            }
+        }
+        Err(e) => Ok(serde_json::json!({
+            "type": "error",
+            "code": "io",
+            "details": e.to_string()
+        })),
     }
 }
 
@@ -79,23 +69,30 @@ fn list_keybindings() -> Result<Vec<KeyBindingJson>, String> {
     Ok(config
         .keybindings
         .into_iter()
-        .map(|b| KeyBindingJson {
-            id: b.id.clone(),
-            keys: b.keys.clone(),
-            action_type: format!("{:?}", b.action),
-        })
+        .map(KeyBindingJson::from)
         .collect())
 }
 
 #[tauri::command]
 fn reload_config() -> Result<serde_json::Value, String> {
     let path = config_ops::get_config_path();
-    let config = addon_core::config::load(&path).map_err(|e| e.to_string())?;
-    match send_sync(&IpcMessage::SetConfig {
-        config: serde_json::to_value(&config).map_err(|e| e.to_string())?,
-    }) {
-        Ok(msg) => Ok(serde_json::to_value(&msg).unwrap()),
-        Err(e) => Ok(serde_json::json!({"type":"error","code":"ipc","details":e.to_string()})),
+    let _config = addon_core::config::load(&path).map_err(|e| e.to_string())?;
+    match send_sync(&IpcMessage::request(IpcRequest::ReloadConfig)) {
+        Ok(msg) => {
+            if let IpcMessage::Response(IpcResponse::ConfigLoaded { keys }) = msg {
+                Ok(serde_json::json!({
+                    "type": "config_loaded",
+                    "keys": keys
+                }))
+            } else {
+                Ok(serde_json::to_value(&msg).unwrap())
+            }
+        }
+        Err(e) => Ok(serde_json::json!({
+            "type": "error",
+            "code": "ipc",
+            "details": e.to_string()
+        })),
     }
 }
 
@@ -104,9 +101,27 @@ fn test_shortcut(
     keys: Vec<String>,
     action: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    match send_sync(&IpcMessage::TestShortcut { keys, action }) {
-        Ok(msg) => Ok(serde_json::to_value(&msg).unwrap()),
-        Err(e) => Ok(serde_json::json!({"type":"error","code":"ipc","details":e.to_string()})),
+    match send_sync(&IpcMessage::request(IpcRequest::TestShortcut { keys, action })) {
+        Ok(msg) => {
+            if let IpcMessage::Response(IpcResponse::TestResult {
+                success,
+                message,
+            }) = msg
+            {
+                Ok(serde_json::json!({
+                    "type": "test_result",
+                    "success": success,
+                    "message": message
+                }))
+            } else {
+                Ok(serde_json::to_value(&msg).unwrap())
+            }
+        }
+        Err(e) => Ok(serde_json::json!({
+            "type": "error",
+            "code": "ipc",
+            "details": e.to_string()
+        })),
     }
 }
 
@@ -154,13 +169,15 @@ fn add_keybinding(
     config_ops::save_config(&path, &yaml).map_err(|e| e.to_string())?;
 
     // Reload daemon
-    match send_sync(&IpcMessage::ReloadConfig) {
-        Ok(_) => {
-            Ok(serde_json::json!({"type":"success","message":format!("Added {} and reloaded", id)}))
-        }
-        Err(e) => Ok(
-            serde_json::json!({"type":"partial_success","message":format!("Added {} but daemon reload failed: {}", id, e)}),
-        ),
+    match send_sync(&IpcMessage::request(IpcRequest::ReloadConfig)) {
+        Ok(_) => Ok(serde_json::json!({
+            "type": "success",
+            "message": format!("Added {} and reloaded", id)
+        })),
+        Err(e) => Ok(serde_json::json!({
+            "type": "partial_success",
+            "message": format!("Added {} but daemon reload failed: {}", id, e)
+        })),
     }
 }
 
@@ -175,15 +192,20 @@ fn remove_keybinding(id: String) -> Result<serde_json::Value, String> {
     config.keybindings.retain(|b| b.id != id);
 
     if config.keybindings.len() == before {
-        return Ok(
-            serde_json::json!({"type":"error","code":"not_found","details":format!("Binding '{}' not found", id)}),
-        );
+        return Ok(serde_json::json!({
+            "type": "error",
+            "code": "not_found",
+            "details": format!("Binding '{}' not found", id)
+        }));
     }
 
     let yaml = serde_yaml::to_string(&config).map_err(|e| e.to_string())?;
     config_ops::save_config(&path, &yaml).map_err(|e| e.to_string())?;
 
-    Ok(serde_json::json!({"type":"success","message":format!("Removed {}", id)}))
+    Ok(serde_json::json!({
+        "type": "success",
+        "message": format!("Removed {}", id)
+    }))
 }
 
 #[tauri::command]
