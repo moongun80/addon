@@ -54,6 +54,7 @@ pub struct XIEventMask {
 
 // X11 core
 #[link(name = "X11", kind = "dylib")]
+#[allow(dead_code)]
 extern "C" {
     fn XOpenDisplay(name: *const c_char) -> XDisplay;
     fn XCloseDisplay(dpy: XDisplay) -> c_int;
@@ -113,24 +114,24 @@ extern "C" {
     fn XKeysymToString(keysym: XKeysym) -> *const c_char;
 }
 
-// X11 constants
-pub const False: c_int = 0;
-pub const True: c_int = 1;
-pub const PointerModeAsync: c_int = 0;
-pub const KeyboardModeAsync: c_int = 0;
-pub const RevertToRoot: XWindow = 0;
-pub const CurrentTime: c_ulong = 0;
+// X11 constants — named for Xlib compatibility (lowercase matches C API)
+const FALSE: c_int = 0;
+const TRUE: c_int = 1;
+const POINTER_MODE_ASYNC: c_int = 0;
+const KEYBOARD_MODE_ASYNC: c_int = 0;
+const REVERT_TO_ROOT: XWindow = 0;
+const CURRENT_TIME: c_ulong = 0;
 
 // XInput2 event types
-pub const XIAllDevices: c_int = -1;
-pub const XI_RawKeyPress: c_int = 238;
-pub const XI_RawKeyRelease: c_int = 239;
-pub const XI_HierarchyChanged: c_int = 17;
+#[allow(dead_code)] const XI_ALL_DEVICES: c_int = -1;
+#[allow(dead_code)] const XI_RAW_KEY_PRESS: c_int = 238;
+#[allow(dead_code)] const XI_RAW_KEY_RELEASE: c_int = 239;
+#[allow(dead_code)] const XI_HIERARCHY_CHANGED: c_int = 17;
 
 // XEvent type constants
-pub const KeyPress: c_int = 2;
-pub const KeyRelease: c_int = 3;
-pub const GenericEvent: c_int = 34;
+#[allow(dead_code)] const KEY_PRESS: c_int = 2;
+#[allow(dead_code)] const KEY_RELEASE: c_int = 3;
+#[allow(dead_code)] const GENERIC_EVENT: c_int = 34;
 
 // ---------------------------------------------------------------------------
 // Thread-safe X11 display wrapper
@@ -253,9 +254,10 @@ impl LinuxX11Adapter {
             .map(|h| h.as_ptr())
             .ok_or_else(|| Error::AdapterNotAvailable("X11 display not open".to_string()))?;
 
-        let result = unsafe { XTestFakeKeyEvent(dpy, keycode, if press { 1 } else { 0 }, 0) };
+        let result =
+            unsafe { XTestFakeKeyEvent(dpy, keycode, if press { TRUE } else { FALSE }, 0) };
 
-        if result == False {
+        if result == FALSE {
             return Err(Error::AdapterNotAvailable(format!(
                 "XTestFakeKeyEvent failed for keycode {}",
                 keycode
@@ -276,15 +278,15 @@ impl LinuxX11Adapter {
         let result = unsafe {
             XGrabKeyboard(
                 dpy,
-                RevertToRoot,
+                REVERT_TO_ROOT,
                 1, // owner_events: allow pointer events to pass through
-                PointerModeAsync,
-                KeyboardModeAsync,
+                POINTER_MODE_ASYNC,
+                KEYBOARD_MODE_ASYNC,
                 0,
             )
         };
 
-        if result == False {
+        if result == FALSE {
             return Err(Error::AdapterNotAvailable(
                 "Failed to grab keyboard. Is another app holding it?".to_string(),
             ));
@@ -297,7 +299,7 @@ impl LinuxX11Adapter {
     /// Releases the keyboard grab.
     fn ungrab_keyboard(&mut self) {
         if let Some(dpy) = self.display.as_ref().map(|h| h.as_ptr()) {
-            unsafe { XUngrabKeyboard(dpy, 0) };
+            unsafe { XUngrabKeyboard(dpy, CURRENT_TIME) };
             tracing::info!("Keyboard ungrabbed");
         }
     }
@@ -320,7 +322,9 @@ impl OsAdapter for LinuxX11Adapter {
         }
 
         self.grab_keyboard()?;
-        tracing::info!("Linux X11 adapter started — keyboard grabbed, event loop pending");
+        tracing::info!(
+            "Linux X11 adapter started — keyboard grabbed, event loop pending"
+        );
         Ok(())
     }
 
