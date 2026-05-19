@@ -116,3 +116,22 @@ impl KeyBinding {
         }
     }
 }
+
+use std::path::Path;
+
+/// Loads configuration from a YAML file at the given path.
+///
+/// # Errors
+///
+/// Returns [`Error::Parse`] if the file cannot be read or parsed.
+pub fn load(path: &Path) -> crate::error::Result<Config> {
+    let contents = std::fs::read_to_string(path).map_err(|e| {
+        crate::error::Error::Parse(format!("failed to read config file {:?}: {}", path, e))
+    })?;
+
+    let config: Config = serde_yaml::from_str(&contents).map_err(|e| {
+        crate::error::Error::Parse(format!("failed to parse config file {:?}: {}", path, e))
+    })?;
+
+    Ok(config)
+}

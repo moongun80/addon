@@ -8,13 +8,23 @@ authors.workspace = true
 description = "Daemon binary for the addon — background service that watches and applies key bindings"
 
 [dependencies]
-addon-core = { workspace = true }
-serde = { workspace = true }
-serde_yaml = { workspace = true }
+addon-core = { path = "../addon-core" }
+addon-macos = { path = "../addon-macos", optional = true }
+addon-windows = { path = "../addon-windows", optional = true }
+addon-linux = { path = "../addon-linux", optional = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-async-trait = { workspace = true }
 dirs = { workspace = true }
 anyhow = { workspace = true }
+
+[features]
+default = []
+macos = ["addon-macos"]
+windows = ["addon-windows"]
+linux = ["addon-linux"]
+
+[[bin]]
+name = "addon-daemon"
+path = "src/main.rs"

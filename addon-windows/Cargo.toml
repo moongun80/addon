@@ -8,11 +8,16 @@ authors.workspace = true
 description = "Windows adapter for the addon — platform-specific key binding hooks"
 
 [dependencies]
-addon-core = { workspace = true }
-serde = { workspace = true }
-serde_yaml = { workspace = true }
+addon-core = { path = "../addon-core" }
+windows-sys = { version = "0.52", features = [
+    "Win32_System_LibraryLoader",
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_Debug",
+] }
 tracing = { workspace = true }
-thiserror = { workspace = true }
-tokio = { workspace = true }
-async-trait = { workspace = true }
-anyhow = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(target_os, values("windows"))'] }
