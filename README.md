@@ -1,11 +1,45 @@
 # addon
 
-개인 키보드/마우스 단축키 동기화 도구
+Cross-platform global key binding automation toolkit.
 
-어떤 환경에서도 동일한 키보드 및 마우스 단축키 경험을 제공하는 툴입니다.
-사용자별 설정을 저장하고 클라우드에서 동기화합니다.
+## Architecture
 
-## 프로젝트 구조
-- `src/` — 소스 코드
-- `config/` — 설정 파일
-- `docs/` — 문서
+```
+addon/
+├── Cargo.toml              # Workspace root
+├── addon-core/             # Shared types, config, logic
+├── addon-macos/            # macOS adapter
+├── addon-windows/          # Windows adapter
+├── addon-linux/            # Linux adapter
+├── addon-daemon/           # Background daemon binary
+└── addon-gui/              # GUI (planned, not yet in workspace)
+```
+
+## Crates
+
+| Crate | Description |
+|-------|-------------|
+| `addon-core` | Core library — config model, key strokes, actions, conflict detection |
+| `addon-macos` | macOS adapter (Carbon Event Manager / CGEventTap) |
+| `addon-windows` | Windows adapter (SetWindowsHookEx low-level keyboard hook) |
+| `addon-linux` | Linux adapter (X11 XGrabKey / Wayland fallback) |
+| `addon-daemon` | Daemon binary — runs in background, applies key bindings |
+| `addon-gui` | GUI configuration tool (framework TBD) |
+
+## Quick Start
+
+```bash
+# Build the workspace
+cargo build --workspace
+
+# Run the daemon
+cargo run -p addon-daemon
+```
+
+## Configuration
+
+Key bindings are defined in a YAML config file. See `docs/` for schema details.
+
+## License
+
+MIT OR Apache-2.0

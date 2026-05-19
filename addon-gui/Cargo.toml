@@ -1,0 +1,10 @@
+[package]
+name = "addon-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "GUI application for the addon — configuration management interface"
+# GUI crate intentionally excluded from workspace members until a framework is chosen
+# (Tauri / Druid / egui)

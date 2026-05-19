@@ -1,0 +1,19 @@
+[package]
+name = "addon-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Core library for the addon — shared types, config, and platform-agnostic logic"
+
+[dependencies]
+serde.workspace = true
+serde_yaml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+dirs.workspace = true
+anyhow.workspace = true

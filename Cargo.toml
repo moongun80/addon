@@ -1,0 +1,28 @@
+[workspace]
+members = [
+    "addon-core",
+    "addon-macos",
+    "addon-windows",
+    "addon-linux",
+    "addon-daemon",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/moongun80/addon"
+authors = ["건 장 <moongun80@gmail.com>"]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "1"
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+dirs = "5"
+anyhow = "1"
+addon-core = { path = "addon-core" }
