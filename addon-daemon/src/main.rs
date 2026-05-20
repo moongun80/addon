@@ -16,7 +16,7 @@
 //! 7. On Ctrl+C, stop the adapter and exit cleanly.
 
 mod daemon;
-mod ipc;
+pub mod ipc;
 mod log;
 
 use std::path::PathBuf;
@@ -129,9 +129,10 @@ async fn main() -> Result<()> {
 ///
 /// Looks in the following locations (first found wins):
 /// 1. `$ADDON_CONFIG` environment variable
-/// 2. `~/.addon/config.yaml`
-/// 3. `./config.yaml` (current directory)
-fn get_config_path() -> Result<PathBuf> {
+/// 2. `~/.config/addon/config.yaml` (XDG)
+/// 3. `~/.addon/config.yaml` (home directory)
+/// 4. `./config.yaml` (current directory)
+pub fn get_config_path() -> Result<PathBuf> {
     // Check environment variable first.
     if let Ok(path) = std::env::var("ADDON_CONFIG") {
         return Ok(PathBuf::from(path));
@@ -182,7 +183,23 @@ fn create_adapter(_config: addon_core::config::Config) -> Result<Box<dyn addon_c
     #[cfg(feature = "macos")]
     {
         let mapper = _config.build_keymapper(addon_core::os::OsPlatform::Macos);
-        return Ok(Box::new(addon_macos::MacOsAdapter::new(_config, mapper)));
+        // Provide an action dispatcher that logs matched actions.
+        // In a production build, this would dispatch to the actual
+        // action execution backend (e.g. AppleScript, Cocoa events).
+        let dispatcher: std::sync::Arc<
+            dyn Fn(&addon_core::keymap::KeyStroke, &addon_core::actions::Action)
+                + Send
+                + Sync,
+        > = std::sync::Arc::new(|stroke, action| {
+            tracing::info!(
+                "macOS action dispatched: stroke={}, action={:?}",
+                stroke.display(),
+                action
+            );
+        });
+        return Ok(Box::new(addon_macos::MacOsAdapter::new(
+            _config, mapper, dispatcher,
+        )));
     }
 
     #[cfg(feature = "windows")]

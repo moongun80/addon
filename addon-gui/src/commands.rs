@@ -1,42 +1,46 @@
-use std::io::{Read, Write};
-use std::net::TcpStream;
+//! Tauri command handlers for the addon GUI.
+//!
+//! All IPC commands communicate with the daemon via Unix domain sockets
+//! using a newline-delimited JSON protocol. Commands are async because
+//! socket I/O must not block the Tauri runtime.
+
+use std::io::{BufRead, BufReader, Write};
+
+use tokio::net::UnixStream;
+use tokio::io::{AsyncWriteExt, AsyncReadExt};
 
 use addon_core::ipc::{IpcMessage, IpcRequest, IpcResponse, KeyBindingJson};
 
+/// Returns the platform-specific socket path.
 fn get_socket_path() -> std::path::PathBuf {
     let dir = std::env::temp_dir().join("addon");
     let _ = std::fs::create_dir_all(&dir);
     dir.join("daemon.sock")
 }
 
-fn send_sync(msg: &IpcMessage) -> Result<IpcMessage, anyhow::Error> {
+/// Send a message over a Unix domain socket and await the response.
+///
+/// Uses the same newline-delimited JSON protocol as the daemon's IPC server.
+async fn send_async(msg: &IpcMessage) -> Result<IpcMessage, anyhow::Error> {
     let socket = get_socket_path();
-    let mut stream = TcpStream::connect(socket)?;
-    let json = serde_json::to_string(msg)?;
-    stream.write_all(json.as_bytes())?;
-    stream.flush()?;
+    let mut stream = UnixStream::connect(&socket).await?;
 
-    let mut response = String::new();
-    let mut buf = [0u8; 4096];
-    let mut total = 0;
-    loop {
-        let n = stream.read(&mut buf[total..])?;
-        if n == 0 {
-            break;
-        }
-        total += n;
-        if total >= buf.len() {
-            break;
-        }
-    }
-    let response = String::from_utf8_lossy(&buf[..total]);
-    let result: IpcMessage = serde_json::from_str(&response)?;
+    let json = serde_json::to_string(msg)?;
+    stream.write_all(json.as_bytes()).await?;
+    stream.write_all(b"\n").await?;
+    stream.flush().await?;
+
+    // Read the newline-delimited response.
+    let mut buf_reader = BufReader::new(stream.try_clone()?);
+    let mut line = String::new();
+    buf_reader.read_line(&mut line).await?;
+    let result: IpcMessage = serde_json::from_str(line.trim())?;
     Ok(result)
 }
 
-#[tauri::command]
-fn get_daemon_status() -> Result<serde_json::Value, String> {
-    match send_sync(&IpcMessage::request(IpcRequest::GetStatus)) {
+#[tauri::command(async)]
+async fn get_daemon_status() -> Result<serde_json::Value, String> {
+    match send_async(&IpcMessage::request(IpcRequest::GetStatus)).await {
         Ok(msg) => {
             if let IpcMessage::Response(IpcResponse::DaemonStatus {
                 running,
@@ -73,11 +77,11 @@ fn list_keybindings() -> Result<Vec<KeyBindingJson>, String> {
         .collect())
 }
 
-#[tauri::command]
-fn reload_config() -> Result<serde_json::Value, String> {
+#[tauri::command(async)]
+async fn reload_config() -> Result<serde_json::Value, String> {
     let path = config_ops::get_config_path();
     let _config = addon_core::config::load(&path).map_err(|e| e.to_string())?;
-    match send_sync(&IpcMessage::request(IpcRequest::ReloadConfig)) {
+    match send_async(&IpcMessage::request(IpcRequest::ReloadConfig)).await {
         Ok(msg) => {
             if let IpcMessage::Response(IpcResponse::ConfigLoaded { keys }) = msg {
                 Ok(serde_json::json!({
@@ -96,12 +100,12 @@ fn reload_config() -> Result<serde_json::Value, String> {
     }
 }
 
-#[tauri::command]
-fn test_shortcut(
+#[tauri::command(async)]
+async fn test_shortcut(
     keys: Vec<String>,
     action: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    match send_sync(&IpcMessage::request(IpcRequest::TestShortcut { keys, action })) {
+    match send_async(&IpcMessage::request(IpcRequest::TestShortcut { keys, action })).await {
         Ok(msg) => {
             if let IpcMessage::Response(IpcResponse::TestResult {
                 success,
@@ -125,38 +129,74 @@ fn test_shortcut(
     }
 }
 
+/// Add a keybinding by properly constructing the action from user-supplied
+/// `action_type` and `action_data` fields (rather than creating dummy values).
 #[tauri::command]
 fn add_keybinding(
     id: String,
     keys: String,
     action_type: String,
+    action_data: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let path = config_ops::get_config_path();
     let content = config_ops::load_config(&path).map_err(|e| e.to_string())?;
     let mut config: addon_core::config::Config =
         serde_yaml::from_str(&content).map_err(|e| e.to_string())?;
 
-    let keys_vec: Vec<String> = keys.split(',').map(|s| s.trim().to_string()).collect();
+    // Properly construct the action from action_type + action_data.
     let action = match action_type.as_str() {
         "paste" => addon_core::actions::Action::Paste {
-            text: "test".into(),
+            text: action_data
+                .get("text")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
         },
         "launch" => addon_core::actions::Action::Launch {
-            path: "/tmp".into(),
+            path: action_data
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
         },
         "remap" => addon_core::actions::Action::Remap {
-            to: "Escape".into(),
+            to: action_data
+                .get("to")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
         },
         "shortcut" => addon_core::actions::Action::Shortcut {
-            shortcut: vec!["Ctrl".into(), "C".into()],
+            shortcut: action_data
+                .get("shortcut")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
         },
-        "system" => addon_core::actions::Action::SystemCommand {
-            command: "volume_down".into(),
+        "system_command" => addon_core::actions::Action::SystemCommand {
+            command: action_data
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
         },
-        _ => addon_core::actions::Action::Paste {
-            text: action_type.into(),
+        "text_insert" => addon_core::actions::Action::TextInsert {
+            text: action_data
+                .get("text")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
         },
+        _ => {
+            return Err(format!("Unknown action type: {action_type}"));
+        }
     };
+
+    let keys_vec: Vec<String> = keys.split(',').map(|s| s.trim().to_string()).collect();
 
     config.keybindings.push(addon_core::config::KeyBinding {
         id: id.clone(),
@@ -168,15 +208,45 @@ fn add_keybinding(
     let yaml = serde_yaml::to_string(&config).map_err(|e| e.to_string())?;
     config_ops::save_config(&path, &yaml).map_err(|e| e.to_string())?;
 
-    // Reload daemon
-    match send_sync(&IpcMessage::request(IpcRequest::ReloadConfig)) {
-        Ok(_) => Ok(serde_json::json!({
-            "type": "success",
-            "message": format!("Added {} and reloaded", id)
-        })),
-        Err(e) => Ok(serde_json::json!({
+    // Reload daemon to pick up the new binding.
+    match tokio::net::UnixStream::connect(get_socket_path()).await {
+        Ok(mut stream) => {
+            let req = IpcMessage::request(IpcRequest::ReloadConfig);
+            let json = serde_json::to_string(&req).map_err(|e| e.to_string())?;
+            stream
+                .write_all(json.as_bytes())
+                .await
+                .map_err(|e| e.to_string())?;
+            stream
+                .write_all(b"\n")
+                .await
+                .map_err(|e| e.to_string())?;
+            stream.flush().await.map_err(|e| e.to_string())?;
+
+            let mut buf_reader =
+                tokio::io::BufReader::new(stream.try_clone().map_err(|e| e.to_string())?);
+            let mut line = String::new();
+            buf_reader
+                .read_line(&mut line)
+                .await
+                .map_err(|e| e.to_string())?;
+
+            match serde_json::from_str::<IpcMessage>(line.trim()) {
+                Ok(IpcMessage::Response(IpcResponse::ConfigLoaded { .. })) => Ok(
+                    serde_json::json!({
+                        "type": "success",
+                        "message": format!("Added {} and reloaded", id)
+                    }),
+                ),
+                _ => Ok(serde_json::json!({
+                    "type": "partial_success",
+                    "message": format!("Added {} but daemon reload failed", id)
+                })),
+            }
+        }
+        Err(_) => Ok(serde_json::json!({
             "type": "partial_success",
-            "message": format!("Added {} but daemon reload failed: {}", id, e)
+            "message": format!("Added {} but daemon reload failed (not running)", id)
         })),
     }
 }

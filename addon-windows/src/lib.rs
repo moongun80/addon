@@ -13,6 +13,7 @@
 //!    actions via callbacks.
 
 use std::os::raw::c_int;
+use std::panic::AssertUnwindSafe;
 
 use addon_core::config::Config;
 use addon_core::keymap::KeyStroke;
@@ -163,6 +164,11 @@ impl KeyMapper for WindowsKeyMapper {
 /// This function translates raw Windows key codes into [`KeyStroke`] objects,
 /// looks them up in the keymap, and fires the matching action callback.
 ///
+/// ## Safety
+///
+/// Wrapped in `catch_unwind` to prevent Rust panics from propagating into
+/// C land, which would terminate the entire process.
+///
 /// ## Parameters
 ///
 /// - `nCode` — The hook code. Only process the event if `>= 0`.
@@ -178,32 +184,45 @@ extern "system" fn hook_callback(n_code: i32, w_param: WPARAM, l_param: LPARAM) 
         return unsafe { CallNextHookEx(None, n_code, w_param, l_param) };
     }
 
-    // Safely read the hook structure.
-    let hook_struct = unsafe { &*(l_param as *const KBDLLHOOKSTRUCT) };
-    let vk_code = hook_struct.vkCode;
-    let scan_code = hook_struct.scanCode;
-    let flags = hook_struct.flags;
-    let key_down = w_param == 0x0100; // WM_KEYDOWN
+    // Use catch_unwind to prevent panics from crashing the process.
+    // Rust panics across FFI boundaries are undefined behavior, so we
+    // must ensure any unwinding is caught here.
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        // Safely read the hook structure.
+        let hook_struct = unsafe { &*(l_param as *const KBDLLHOOKSTRUCT) };
+        let vk_code = hook_struct.vkCode;
+        let scan_code = hook_struct.scanCode;
+        let flags = hook_struct.flags;
+        let key_down = w_param == 0x0100; // WM_KEYDOWN
 
-    // Skip key-up events, repeat flags, and injected events.
-    if !key_down || (flags & 0x80) != 0 {
-        return unsafe { CallNextHookEx(None, n_code, w_param, l_param) };
+        // Skip key-up events, repeat flags, and injected events.
+        if !key_down || (flags & 0x80) != 0 {
+            return unsafe { CallNextHookEx(None, n_code, w_param, l_param) };
+        }
+
+        // Translate virtual-key + scan code to a KeyStroke.
+        if let Some(stroke) = vk_to_stroke(vk_code, scan_code) {
+            // In a real implementation, the adapter would maintain a global
+            // table of registered hotkeys and look up the callback here.
+            // For now, log the detected stroke.
+            tracing::info!(
+                "Keyboard event detected: vk=0x{:02X} → {}",
+                vk_code,
+                stroke.display()
+            );
+        }
+
+        // Pass the event to the next hook in the chain.
+        unsafe { CallNextHookEx(None, n_code, w_param, l_param) }
+    }));
+
+    match result {
+        Ok(ret) => ret,
+        Err(_) => {
+            tracing::error!("Keyboard hook callback panicked — passing event to next hook");
+            unsafe { CallNextHookEx(None, n_code, w_param, l_param) }
+        }
     }
-
-    // Translate virtual-key + scan code to a KeyStroke.
-    if let Some(stroke) = vk_to_stroke(vk_code, scan_code) {
-        // In a real implementation, the adapter would maintain a global
-        // table of registered hotkeys and look up the callback here.
-        // For now, log the detected stroke.
-        tracing::info!(
-            "Keyboard event detected: vk=0x{:02X} → {}",
-            vk_code,
-            stroke.display()
-        );
-    }
-
-    // Pass the event to the next hook in the chain.
-    unsafe { CallNextHookEx(None, n_code, w_param, l_param) }
 }
 
 /// Converts a Windows virtual-key code + scan code to a [`KeyStroke`].

@@ -18,7 +18,11 @@ pub enum OsPlatform {
 }
 
 impl OsPlatform {
-    /// Returns the platform used for "all platforms" conflict detection.
+    /// Returns the default platform used for "all platforms" conflict detection.
+    ///
+    /// Currently defaults to `Linux` as the common denominator for cross-platform
+    /// conflict resolution. This is used when a key binding doesn't specify
+    /// a platform override — conflicts are checked against this baseline platform.
     pub fn platform_all() -> OsPlatform {
         OsPlatform::Linux
     }

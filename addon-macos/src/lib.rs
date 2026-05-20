@@ -8,7 +8,8 @@
 //! 1. **HotKey registration** — `HotKey` wrapper around Carbon
 //!    `RegisterEventHotKey` for global shortcut detection.
 //! 2. **Event dispatch** — when a registered hotkey fires, the adapter
-//!    looks up the corresponding `Action` from the keymap and executes it.
+//!    looks up the corresponding `Action` from the keymap and executes it
+//!    via the `action_dispatcher` closure stored in the adapter.
 
 use std::sync::Arc;
 
@@ -21,6 +22,11 @@ use addon_core::{error::Error, OsAdapter, OsPlatform};
 mod hotkey;
 pub use hotkey::HotKey;
 
+/// Closure type for dispatching actions when a hotkey fires.
+///
+/// Receives the matched key stroke and the associated action.
+pub type ActionDispatcher = dyn Fn(&KeyStroke, &Action) + Send + Sync;
+
 /// A macOS-specific adapter that installs global key bindings via Carbon
 /// EventHotKey API and Cocoa EventTap for key simulation.
 pub struct MacOsAdapter {
@@ -32,16 +38,30 @@ pub struct MacOsAdapter {
     hotkeys: Vec<HotKey>,
     /// Whether the adapter has been fully initialized.
     initialized: bool,
+    /// Closure invoked when a hotkey fires. Dispatches the matched action.
+    ///
+    /// This allows the daemon (which owns the adapter) to inject the actual
+    /// action-execution logic without coupling the adapter crate to any
+    /// specific execution mechanism.
+    action_dispatcher: Arc<ActionDispatcher>,
 }
 
 impl MacOsAdapter {
     /// Creates a new macOS adapter with the given configuration and key map.
-    pub fn new(config: Config, keymap: Box<dyn KeyMapper>) -> Self {
+    ///
+    /// The `action_dispatcher` closure is called whenever a registered hotkey
+    /// fires, receiving the matched [`KeyStroke`] and the associated [`Action`].
+    pub fn new(
+        config: Config,
+        keymap: Box<dyn KeyMapper>,
+        action_dispatcher: Arc<ActionDispatcher>,
+    ) -> Self {
         Self {
             config,
             keymap,
             hotkeys: Vec::new(),
             initialized: false,
+            action_dispatcher,
         }
     }
 
@@ -49,6 +69,8 @@ impl MacOsAdapter {
     fn register_bindings(&mut self) -> Result<(), Error> {
         // Rebuild keymap from config.
         self.build_keymap();
+
+        let dispatcher = Arc::clone(&self.action_dispatcher);
 
         for binding in &self.config.keybindings {
             let keys = binding.effective_keys(OsPlatform::Macos);
@@ -66,10 +88,8 @@ impl MacOsAdapter {
                                     s.display(),
                                     binding_id
                                 );
-                                // In a real implementation, actions would be
-                                // dispatched here via an async channel or executor.
-                                // For now, log what action would be performed.
-                                tracing::info!("Would execute action: {:?}", action);
+                                // Dispatch the action via the adapter's dispatcher.
+                                dispatcher(s, &action);
                             }),
                         )
                         .ok_or_else(|| {
@@ -179,11 +199,13 @@ mod tests {
     #[test]
     fn test_keymap_build() {
         let config = test_config();
+        let dispatcher: Arc<ActionDispatcher> = Arc::new(|_, _| {});
         let mut adapter = MacOsAdapter::new(
             config,
             Box::new(MacOsKeyMapper {
                 map: std::collections::HashMap::new(),
             }),
+            dispatcher,
         );
         adapter.build_keymap();
 
@@ -194,11 +216,13 @@ mod tests {
     #[test]
     fn test_keymap_missing() {
         let config = test_config();
+        let dispatcher: Arc<ActionDispatcher> = Arc::new(|_, _| {});
         let mut adapter = MacOsAdapter::new(
             config,
             Box::new(MacOsKeyMapper {
                 map: std::collections::HashMap::new(),
             }),
+            dispatcher,
         );
         adapter.build_keymap();
 
@@ -209,11 +233,13 @@ mod tests {
     #[test]
     fn test_platform() {
         let config = test_config();
+        let dispatcher: Arc<ActionDispatcher> = Arc::new(|_, _| {});
         let adapter = MacOsAdapter::new(
             config,
             Box::new(MacOsKeyMapper {
                 map: std::collections::HashMap::new(),
             }),
+            dispatcher,
         );
         assert_eq!(adapter.get_platform(), OsPlatform::Macos);
     }

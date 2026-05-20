@@ -1,7 +1,8 @@
 //! IPC server — Unix domain socket listener and handler.
 //!
 //! The daemon listens on a Unix socket for JSON messages from the
-//! Tauri GUI client. Each message is newline-delimited (`\n`).
+//! Tauri GUI client. Each message is newline-delimited (`\n`),
+//! following the same protocol used by the GUI client.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -10,6 +11,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 
 use crate::daemon::DaemonState;
+use crate::get_config_path;
 use addon_core::ipc::{IpcMessage, IpcRequest, IpcResponse};
 
 // ---------------------------------------------------------------------------
@@ -79,6 +81,9 @@ impl IpcServer {
 // ---------------------------------------------------------------------------
 
 /// Process messages from a single GUI client connection.
+///
+/// The protocol is newline-delimited JSON: each message ends with `\n`.
+/// We use a `BufReader` with `read_line` to handle partial reads correctly.
 async fn handle_client(
     stream: UnixStream,
     daemon_state: Arc<Mutex<DaemonState>>,
@@ -183,8 +188,6 @@ fn process_request(req: &IpcRequest, state: &Arc<Mutex<DaemonState>>) -> IpcMess
                     if let Ok(new_config) = serde_json::from_value::<addon_core::config::Config>(json.clone()) {
                         guard.config = new_config.clone();
                         // Rebuild adapter (stop → init → start) if running.
-                        // macOS/Windows: init() calls build_keymap() → new keymap applied.
-                        // Linux: keymap built in constructor, but init() still cleans up state.
                         if let Some(ref mut adapter) = guard.adapter {
                             if let Err(e) = adapter.stop() {
                                 tracing::warn!("Failed to stop adapter during SetConfig: {e}");
@@ -287,7 +290,6 @@ fn reload_config_inner(
 
 /// Extract key bindings from a JSON config value (for SetConfig requests).
 fn cfg_keys_from_json(json: &serde_json::Value) -> Vec<addon_core::ipc::KeyBindingJson> {
-    // Use serde's type-safe deserialization instead of manual JSON navigation.
     serde_json::from_value::<addon_core::config::Config>(json.clone())
         .map(|config| {
             config
@@ -297,31 +299,6 @@ fn cfg_keys_from_json(json: &serde_json::Value) -> Vec<addon_core::ipc::KeyBindi
                 .collect()
         })
         .unwrap_or_default()
-}
-
-/// Returns the path to the configuration file (same logic as main).
-fn get_config_path() -> Result<std::path::PathBuf, String> {
-    use std::path::PathBuf;
-
-    if let Ok(path) = std::env::var("ADDON_CONFIG") {
-        return Ok(PathBuf::from(path));
-    }
-    if let Some(config_dir) = dirs::config_dir() {
-        let p = config_dir.join("addon").join("config.yaml");
-        if p.exists() {
-            return Ok(p);
-        }
-    }
-    if let Some(home) = dirs::home_dir() {
-        let p = home.join(".addon").join("config.yaml");
-        if p.exists() {
-            return Ok(p);
-        }
-    }
-    if PathBuf::from("config.yaml").exists() {
-        return Ok(PathBuf::from("config.yaml"));
-    }
-    Err("cannot determine config path".to_string())
 }
 
 /// A lightweight config struct used for IPC message validation.

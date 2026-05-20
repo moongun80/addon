@@ -356,6 +356,34 @@ impl LinuxX11Adapter {
             tracing::info!("Keyboard ungrabbed");
         }
     }
+
+    /// Processes pending X11 events.
+    ///
+    /// Drains the X11 event queue and processes any key events that are
+    /// available. This is needed because the Linux adapter captures events
+    /// via X11 grabs but doesn't have its own event loop — the caller
+    /// must invoke this method periodically to process captured events.
+    ///
+    /// Returns `Ok(())` on success, or an error if the display is not open.
+    pub fn process_events(&mut self) -> Result<(), Error> {
+        let dpy = self
+            .display
+            .as_ref()
+            .map(|h| h.as_ptr())
+            .ok_or_else(|| Error::AdapterNotAvailable("X11 display not open".to_string()))?;
+
+        // Process all pending events in a loop.
+        while unsafe { XPending(dpy) } > 0 {
+            let mut event = unsafe { std::mem::zeroed::<XEvent>() };
+            unsafe { XNextEvent(dpy, &mut event as *mut _) };
+
+            // We only care about key-related events here.
+            // In a full implementation, this would dispatch to the keymap.
+            tracing::trace!("Processed X11 event type: {}", event.type_);
+        }
+
+        Ok(())
+    }
 }
 
 impl OsAdapter for LinuxX11Adapter {
