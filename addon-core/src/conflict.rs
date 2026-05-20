@@ -3,6 +3,7 @@
 /// Provides [`detect_conflicts`] which scans a list of key bindings and
 /// returns any overlapping key strokes per platform.
 use crate::config::KeyBinding;
+use crate::keymap::KeyStroke;
 use crate::os::OsPlatform;
 
 /// A detected conflict between two key bindings.
@@ -27,39 +28,72 @@ pub struct Conflict {
 ///
 /// 1. For each binding, expand its key strokes (applying platform overrides
 ///    if a platform is specified).
-/// 2. Track all key strokes in a map from `(platform, keys)` → binding IDs.
-/// 3. Where the map value has more than one binding ID, emit a conflict.
+/// 2. Parse each key string into a KeyStroke to normalize modifier ordering
+///    (e.g. "Ctrl+Shift+V" == "Shift+Ctrl+V"), then use the canonical
+///    display string as the lookup key.
+/// 3. Track all key strokes in a map from `(platform, canonical_key)` → binding IDs.
+/// 4. Where the map value has more than one binding ID, emit a conflict.
 pub fn detect_conflicts(keybindings: &[KeyBinding]) -> Vec<Conflict> {
     let mut conflicts = Vec::new();
 
-    // Build a map: (platform, key_vector) -> list of binding IDs
+    // Build a map: (platform, canonical_key) -> list of binding IDs
     let mut lookup: std::collections::HashMap<(OsPlatform, String), Vec<String>> =
         std::collections::HashMap::new();
 
+    // All platforms for default bindings
+    let all_platforms = [OsPlatform::Macos, OsPlatform::Windows, OsPlatform::Linux];
+
     for binding in keybindings {
-        // Add bindings for all platforms (default keys)
+        // Add bindings for ALL platforms (default keys)
         for key in &binding.keys {
-            let entry = lookup
-                .entry((OsPlatform::platform_all(), key.clone()))
-                .or_default();
-            entry.push(binding.id.clone());
+            let canonical = match KeyStroke::parse(key) {
+                Ok(stroke) => stroke.display(),
+                Err(e) => {
+                    tracing::warn!(
+                        "skipping unparseable key {:?} for binding {}: {}",
+                        key,
+                        binding.id,
+                        e
+                    );
+                    continue;
+                }
+            };
+            for platform in &all_platforms {
+                let entry = lookup.entry((*platform, canonical.clone())).or_default();
+                entry.push(binding.id.clone());
+            }
         }
 
         // Add per-platform overrides
         if let Some(ref overrides) = binding.overrides {
             if let Some(ref macos_keys) = overrides.macos {
                 for key in macos_keys {
-                    let entry = lookup
-                        .entry((OsPlatform::Macos, key.clone()))
-                        .or_default();
+                    let canonical = match KeyStroke::parse(key) {
+                        Ok(stroke) => stroke.display(),
+                        Err(e) => {
+                            tracing::warn!(
+                                "skipping unparseable key {:?} for binding {} (macOS override): {}",
+                                key,
+                                binding.id,
+                                e
+                            );
+                            continue;
+                        }
+                    };
+                    let entry = lookup.entry((OsPlatform::Macos, canonical)).or_default();
                     entry.push(binding.id.clone());
                 }
             }
             if let Some(ref windows_keys) = overrides.windows {
                 for key in windows_keys {
-                    let entry = lookup
-                        .entry((OsPlatform::Windows, key.clone()))
-                        .or_default();
+                    let canonical = match KeyStroke::parse(key) {
+                        Ok(stroke) => stroke.display(),
+                        Err(e) => {
+                            tracing::warn!("skipping unparseable key {:?} for binding {} (Windows override): {}", key, binding.id, e);
+                            continue;
+                        }
+                    };
+                    let entry = lookup.entry((OsPlatform::Windows, canonical)).or_default();
                     entry.push(binding.id.clone());
                 }
             }
@@ -123,9 +157,19 @@ mod tests {
             sample_binding("paste2", &["Ctrl+V"]),
         ];
         let conflicts = detect_conflicts(&keybindings);
-        assert_eq!(conflicts.len(), 1);
-        assert_eq!(conflicts[0].binding1, "paste");
-        assert_eq!(conflicts[0].binding2, "paste2");
-        assert_eq!(conflicts[0].platform, Some(OsPlatform::Linux));
+        // Should detect conflicts on all 3 platforms
+        assert_eq!(conflicts.len(), 3);
+    }
+
+    #[test]
+    fn test_detect_conflict_different_modifier_order() {
+        // "Ctrl+Shift+V" and "Shift+Ctrl+V" should be treated as the same key
+        let keybindings = vec![
+            sample_binding("bind1", &["Ctrl+Shift+V"]),
+            sample_binding("bind2", &["Shift+Ctrl+V"]),
+        ];
+        let conflicts = detect_conflicts(&keybindings);
+        // Should detect conflicts on all 3 platforms
+        assert_eq!(conflicts.len(), 3);
     }
 }

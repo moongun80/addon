@@ -119,6 +119,10 @@ impl MacOsAdapter {
 }
 
 impl OsAdapter for MacOsAdapter {
+    fn set_config(&mut self, config: &Config) {
+        self.config = config.clone();
+    }
+
     fn init(&mut self) -> Result<(), Error> {
         tracing::info!("Initializing macOS adapter");
 

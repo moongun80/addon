@@ -25,6 +25,18 @@ pub enum Error {
     /// An invalid key or key stroke was encountered.
     #[error("invalid key: {0}")]
     InvalidKey(String),
+
+    /// Logging initialization failed.
+    #[error("log initialization error: {0}")]
+    LogInit(String),
+
+    /// IPC communication error.
+    #[error("IPC error: {0}")]
+    Ipc(String),
+
+    /// Shell injection risk detected.
+    #[error("shell injection risk: {0}")]
+    ShellInjection(String),
 }
 
 /// Convenience alias for `Result<T, Error>`.

@@ -12,15 +12,17 @@ pub fn get_config_path() -> String {
         }
     }
 
-    // 3. Fallback to home directory (~/.addon/config.yaml)
+    // 3. FIX-023: Default to ~/.addon/config.yaml, create directory if needed
     if let Some(home) = dirs::home_dir() {
-        let home_config = home.join(".addon").join("config.yaml");
-        if home_config.exists() {
-            return home_config.to_string_lossy().into_owned();
+        let home_config_dir = home.join(".addon");
+        let home_config = home_config_dir.join("config.yaml");
+        if !home_config_dir.exists() {
+            let _ = std::fs::create_dir_all(&home_config_dir);
         }
+        return home_config.to_string_lossy().into_owned();
     }
 
-    // 4. Final fallback: current directory
+    // 4. Last resort fallback (shouldn't happen on any sane system)
     String::from("./config.yaml")
 }
 
@@ -29,10 +31,18 @@ pub fn load_config(path: &str) -> Result<String, anyhow::Error> {
 }
 
 pub fn save_config(path: &str, content: &str) -> Result<(), anyhow::Error> {
-    if let Some(parent) = std::path::Path::new(path).parent() {
+    let path_buf = std::path::Path::new(path);
+
+    // Ensure parent directory exists
+    if let Some(parent) = path_buf.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, content)?;
+
+    // FIX-022: Atomic save — write to temp file, then rename
+    let tmp_path = path_buf.with_extension("yaml.tmp");
+    std::fs::write(&tmp_path, content)?;
+    std::fs::rename(&tmp_path, path_buf)?;
+
     Ok(())
 }
 

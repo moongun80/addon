@@ -47,6 +47,14 @@ impl IpcServer {
         }
 
         let listener = UnixListener::bind(&address)?;
+
+        // FIX-012: Restrict socket file permissions to owner-only (0o600)
+        std::fs::set_permissions(
+            &address,
+            std::os::unix::fs::PermissionsExt::from_mode(0o600),
+        )
+        .ok();
+
         tracing::info!("IPC server listening on {}", address.display());
 
         Ok(Self {
@@ -94,7 +102,7 @@ async fn handle_client(
     loop {
         let mut line = String::new();
         buf_reader.read_line(&mut line).await?;
-        let line = line.trim_end_matches(|c| c == '\n' || c == '\r');
+        let line = line.trim_end_matches(['\n', '\r']);
 
         if line.is_empty() {
             break;
@@ -121,80 +129,113 @@ async fn handle_client(
 
 /// Process a single client request and produce a response.
 fn process_request(req: &IpcRequest, state: &Arc<Mutex<DaemonState>>) -> IpcMessage {
+    let request_id = req.request_id().map(str::to_string);
+
     let mut guard = match state.lock() {
         Ok(g) => g,
         Err(poisoned) => poisoned.into_inner(),
     };
 
-    match req {
-        IpcRequest::GetStatus => IpcMessage::response(IpcResponse::DaemonStatus {
+    let resp: IpcResponse = match req {
+        IpcRequest::GetStatus { .. } => IpcResponse::DaemonStatus {
             running: guard.running,
             pid: std::process::id(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-        }),
+            request_id: None,
+        },
 
-        IpcRequest::StartDaemon => {
+        IpcRequest::StartDaemon { .. } => {
             if guard.running {
-                IpcMessage::response(IpcResponse::TestResult {
+                IpcResponse::TestResult {
                     success: false,
                     message: "Daemon is already running".to_string(),
-                })
+                    request_id: None,
+                }
             } else {
-                guard.running = true;
+                // FIX-009: Capture initialized flag before mutable borrow
+                let was_initialized = guard.initialized;
+
                 if let Some(ref mut adapter) = guard.adapter {
-                    if let Err(e) = adapter.init() {
-                        IpcMessage::response(IpcResponse::Error {
-                            code: "ADAPTER_INIT_ERROR".to_string(),
-                            details: e.to_string(),
-                        })
-                    } else if let Err(e) = adapter.start() {
-                        IpcMessage::response(IpcResponse::Error {
-                            code: "ADAPTER_START_ERROR".to_string(),
-                            details: e.to_string(),
-                        })
-                    } else {
-                        IpcMessage::response(IpcResponse::DaemonStatus {
-                            running: true,
-                            pid: std::process::id(),
-                            version: env!("CARGO_PKG_VERSION").to_string(),
-                        })
+                    // FIX-009: Only init if not already initialized
+                    if !was_initialized {
+                        if let Err(e) = adapter.init() {
+                            return IpcMessage::response(
+                                IpcResponse::Error {
+                                    code: "ADAPTER_INIT_ERROR".to_string(),
+                                    details: e.to_string(),
+                                    request_id: None,
+                                }
+                                .with_request_id(request_id),
+                            );
+                        }
+                    }
+
+                    // FIX-011: Set running = true ONLY after start() succeeds
+                    if let Err(e) = adapter.start() {
+                        return IpcMessage::response(
+                            IpcResponse::Error {
+                                code: "ADAPTER_START_ERROR".to_string(),
+                                details: e.to_string(),
+                                request_id: None,
+                            }
+                            .with_request_id(request_id),
+                        );
+                    }
+                    // Both init and start succeeded — update flags now
+                    guard.running = true;
+                    guard.initialized = true;
+
+                    IpcResponse::DaemonStatus {
+                        running: true,
+                        pid: std::process::id(),
+                        version: env!("CARGO_PKG_VERSION").to_string(),
+                        request_id: None,
                     }
                 } else {
-                    IpcMessage::response(IpcResponse::TestResult {
+                    guard.running = true;
+                    IpcResponse::TestResult {
                         success: true,
                         message: "Daemon started (no adapter available)".to_string(),
-                    })
+                        request_id: None,
+                    }
                 }
             }
         }
 
-        IpcRequest::StopDaemon => {
+        IpcRequest::StopDaemon { .. } => {
             if let Some(ref mut adapter) = guard.adapter {
+                // FIX-011: Set running = false ONLY after stop() succeeds
                 if let Err(e) = adapter.stop() {
-                    return IpcMessage::response(IpcResponse::Error {
-                        code: "ADAPTER_STOP_ERROR".to_string(),
-                        details: e.to_string(),
-                    });
+                    return IpcMessage::response(
+                        IpcResponse::Error {
+                            code: "ADAPTER_STOP_ERROR".to_string(),
+                            details: e.to_string(),
+                            request_id: None,
+                        }
+                        .with_request_id(request_id),
+                    );
                 }
             }
             guard.running = false;
-            IpcMessage::response(IpcResponse::TestResult {
-                success: true,
-                message: "Daemon stopping".to_string(),
-            })
+            guard.initialized = false;
+            return IpcMessage::response(
+                IpcResponse::TestResult {
+                    success: true,
+                    message: "Daemon stopping".to_string(),
+                    request_id: None,
+                }
+                .with_request_id(request_id),
+            );
         }
 
-        IpcRequest::SetConfig { config: json } => {
+        IpcRequest::SetConfig { config: json, .. } => {
             // Parse JSON as Config directly
             match serde_json::from_value::<addon_core::config::Config>(json.clone()) {
                 Ok(new_config) => {
                     // Detect conflicts before applying
                     let conflicts = addon_core::conflict::detect_conflicts(&new_config.keybindings);
                     if !conflicts.is_empty() {
-                        tracing::warn!(
-                            "{} conflict(s) in new config",
-                            conflicts.len()
-                        );
+                        tracing::warn!("{} conflict(s) in new config", conflicts.len());
                     }
 
                     // Update config
@@ -203,17 +244,25 @@ fn process_request(req: &IpcRequest, state: &Arc<Mutex<DaemonState>>) -> IpcMess
 
                     // Rebuild adapter if running
                     if old_running {
+                        // FIX-010: Clone config before mutable borrow on adapter
+                        let new_cfg = guard.config.clone();
+                        let mut init_ok = false;
                         if let Some(ref mut adapter) = guard.adapter {
-                            // Stop, reinit, restart with new config
-                            if let Err(e) = adapter.stop() {
-                                tracing::warn!("Adapter stop during SetConfig: {e}");
-                            }
-                            if let Err(e) = adapter.init() {
-                                tracing::warn!("Adapter reinit during SetConfig: {e}");
-                            } else if let Err(e) = adapter.start() {
-                                tracing::warn!("Adapter restart during SetConfig: {e}");
+                            adapter.set_config(&new_cfg);
+                            if adapter.stop().is_ok() {
+                                init_ok = adapter.init().is_ok();
+                                if init_ok {
+                                    if let Err(e) = adapter.start() {
+                                        tracing::warn!("Adapter restart during SetConfig: {e}");
+                                    }
+                                } else {
+                                    tracing::warn!("Adapter reinit during SetConfig");
+                                }
+                            } else {
+                                tracing::warn!("Adapter stop during SetConfig");
                             }
                         }
+                        guard.initialized = init_ok;
                     }
 
                     let keys: Vec<addon_core::ipc::KeyBindingJson> = guard
@@ -223,24 +272,37 @@ fn process_request(req: &IpcRequest, state: &Arc<Mutex<DaemonState>>) -> IpcMess
                         .cloned()
                         .map(addon_core::ipc::KeyBindingJson::from)
                         .collect();
-                    IpcMessage::response(IpcResponse::ConfigLoaded { keys })
+                    return IpcMessage::response(
+                        IpcResponse::ConfigLoaded {
+                            keys,
+                            request_id: None,
+                        }
+                        .with_request_id(request_id),
+                    );
                 }
-                Err(e) => IpcMessage::response(IpcResponse::Error {
+                Err(e) => IpcResponse::Error {
                     code: "CONFIG_PARSE_ERROR".to_string(),
                     details: e.to_string(),
-                }),
+                    request_id: None,
+                },
             }
         }
 
-        IpcRequest::ReloadConfig => match reload_config_inner(&mut guard) {
-            Ok(keys) => IpcMessage::response(IpcResponse::ConfigLoaded { keys }),
-            Err(e) => IpcMessage::response(IpcResponse::Error {
+        IpcRequest::ReloadConfig { .. } => match reload_config_inner(&mut guard) {
+            Ok(keys) => IpcResponse::ConfigLoaded {
+                keys,
+                request_id: None,
+            },
+            Err(e) => IpcResponse::Error {
                 code: "RELOAD_ERROR".to_string(),
                 details: e,
-            }),
+                request_id: None,
+            },
         },
 
-        IpcRequest::TestShortcut { keys, action: _ } => {
+        IpcRequest::TestShortcut {
+            keys, action: _, ..
+        } => {
             let mut all_ok = true;
             let mut messages: Vec<String> = Vec::new();
 
@@ -262,12 +324,15 @@ fn process_request(req: &IpcRequest, state: &Arc<Mutex<DaemonState>>) -> IpcMess
                 messages.join("; ")
             };
 
-            IpcMessage::response(IpcResponse::TestResult {
+            IpcResponse::TestResult {
                 success: all_ok,
                 message: msg_text,
-            })
+                request_id: None,
+            }
         }
-    }
+    };
+
+    IpcMessage::response(resp.with_request_id(request_id))
 }
 
 /// Reload configuration from disk (internal, requires mutable state).
@@ -294,11 +359,20 @@ fn reload_config_inner(
     guard.config = new_config.clone();
 
     // Rebuild adapter keymap if running.
+    let cfg_for_adapter = guard.config.clone();
+    let mut init_ok = true;
     if let Some(ref mut adapter) = guard.adapter {
-        adapter.stop().map_err(|e| e.to_string())?;
-        adapter.init().map_err(|e| e.to_string())?;
-        adapter.start().map_err(|e| e.to_string())?;
+        // FIX-010: Inject new config into adapter before re-init
+        adapter.set_config(&cfg_for_adapter);
+        if adapter.stop().is_err() {
+            init_ok = false;
+        } else if adapter.init().is_err() {
+            init_ok = false;
+        } else if adapter.start().is_err() {
+            init_ok = false;
+        }
     }
+    guard.initialized = init_ok;
 
     let keys: Vec<addon_core::ipc::KeyBindingJson> = guard
         .config

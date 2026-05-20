@@ -10,6 +10,22 @@ pub fn create_tray(app: &AppHandle) -> Result<(), anyhow::Error> {
     let _tray = TrayIconBuilder::new()
         .menu(&menu)
         .tooltip("addon")
+        .on_menu_event(|app, event| {
+            match event.id.as_ref() {
+                "quit" => {
+                    app.exit(0);
+                }
+                "show" => {
+                    for window in app.windows().values() {
+                        if window.is_minimized().unwrap_or(false) {
+                            let _ = window.unminimize();
+                        }
+                        let _ = window.set_focus();
+                    }
+                }
+                _ => {}
+            }
+        })
         .build(app)?;
 
     Ok(())

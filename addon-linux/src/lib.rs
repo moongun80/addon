@@ -245,7 +245,12 @@ impl LinuxX11Adapter {
         };
 
         let result = unsafe {
-            XISelectEvents(dpy, root_window, &xi_mask as *const XIEventMask as *mut XIEventMask, 1)
+            XISelectEvents(
+                dpy,
+                root_window,
+                &xi_mask as *const XIEventMask as *mut XIEventMask,
+                1,
+            )
         };
 
         if result == FALSE {
@@ -307,7 +312,7 @@ impl LinuxX11Adapter {
             XGrabKeyboard(
                 dpy,
                 REVERT_TO_NONE,
-                TRUE,  // owner_events: allow pointer events to pass through
+                TRUE, // owner_events: allow pointer events to pass through
                 GRAB_MODE_ASYNC,
                 GRAB_MODE_ASYNC,
                 CURRENT_TIME as c_ulong,
@@ -362,6 +367,10 @@ impl LinuxX11Adapter {
 }
 
 impl OsAdapter for LinuxX11Adapter {
+    fn set_config(&mut self, config: &Config) {
+        self.config = config.clone();
+    }
+
     fn init(&mut self) -> Result<(), Error> {
         tracing::info!("Initializing Linux X11 adapter");
         self.open_display()?;
@@ -379,9 +388,7 @@ impl OsAdapter for LinuxX11Adapter {
         }
 
         self.grab_keyboard()?;
-        tracing::info!(
-            "Linux X11 adapter started — keyboard grabbed, event loop pending"
-        );
+        tracing::info!("Linux X11 adapter started — keyboard grabbed, event loop pending");
         Ok(())
     }
 

@@ -68,8 +68,10 @@ async fn main() -> Result<()> {
     // ------------------------------------------------------------------
     // 4. Create the platform-specific adapter.
     // ------------------------------------------------------------------
-    let mut adapter = create_adapter(config.clone()).context("failed to create OS adapter")?;
-    adapter.init().context("adapter init failed")?;
+    // NOTE: We do NOT call adapter.init() here. Initialization is deferred
+    // until StartDaemon IPC is received, avoiding double-init when the
+    // daemon boots and the GUI immediately sends StartDaemon.
+    let adapter = create_adapter(config.clone()).context("failed to create OS adapter")?;
 
     // ------------------------------------------------------------------
     // 5. Create daemon state.
@@ -174,7 +176,7 @@ pub fn get_config_path() -> Result<PathBuf> {
 fn create_adapter(_config: addon_core::config::Config) -> Result<Box<dyn addon_core::OsAdapter>> {
     #[cfg(feature = "linux")]
     {
-        return Ok(Box::new(addon_linux::LinuxX11Adapter::new(_config)));
+        Ok(Box::new(addon_linux::LinuxX11Adapter::new(_config)))
     }
 
     #[cfg(feature = "macos")]
@@ -184,9 +186,7 @@ fn create_adapter(_config: addon_core::config::Config) -> Result<Box<dyn addon_c
         // In a production build, this would dispatch to the actual
         // action execution backend (e.g. AppleScript, Cocoa events).
         let dispatcher: std::sync::Arc<
-            dyn Fn(&addon_core::keymap::KeyStroke, &addon_core::actions::Action)
-                + Send
-                + Sync,
+            dyn Fn(&addon_core::keymap::KeyStroke, &addon_core::actions::Action) + Send + Sync,
         > = std::sync::Arc::new(|stroke, action| {
             tracing::info!(
                 "macOS action dispatched: stroke={}, action={:?}",

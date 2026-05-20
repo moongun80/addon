@@ -76,7 +76,8 @@
             <option value="launch">Launch</option>
             <option value="remap">Remap</option>
             <option value="shortcut">Shortcut</option>
-            <option value="system">System Command</option>
+            <option value="system_command">System Command</option>
+            <option value="text_insert">Text Insert</option>
           </select>
         </div>
       </div>
@@ -117,7 +118,8 @@
         },
         async addBinding() {
           try {
-            const r = await invoke('add_keybinding', { id: this.form.id, keys: this.form.keys, actionType: this.form.actionType });
+            const r = await invoke('add_keybinding', { id: this.form.id, keys: this.form.keys, action_type: this.form.actionType,
+            action_data: {} });
             this.testMsg = r.message || 'Added!';
             await this.refresh();
             this.form = { id: '', keys: '', actionType: 'paste' };

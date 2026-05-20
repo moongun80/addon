@@ -21,9 +21,16 @@ fn get_socket_path() -> std::path::PathBuf {
 /// Send a message over a Unix domain socket and await the response.
 ///
 /// Uses the same newline-delimited JSON protocol as the daemon's IPC server.
+/// FIX-024: Wrapped with a 5-second connection timeout so the GUI doesn't
+/// hang forever if the daemon is dead.
 async fn send_async(msg: &IpcMessage) -> Result<IpcMessage, anyhow::Error> {
     let socket = get_socket_path();
-    let mut stream = UnixStream::connect(&socket).await?;
+    let mut stream = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        UnixStream::connect(&socket),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("Daemon not responding (connection timeout)"))??;
 
     let json = serde_json::to_string(msg)?;
     stream.write_all(json.as_bytes()).await?;
@@ -55,7 +62,8 @@ async fn get_daemon_status() -> Result<serde_json::Value, String> {
                     "version": version
                 }))
             } else {
-                Ok(serde_json::to_value(&msg).unwrap())
+                // FIX-021: Replace unwrap() with safe serialization
+                serde_json::to_value(&msg).map_err(|e| e.to_string())
             }
         }
         Err(e) => Ok(serde_json::json!({
@@ -79,8 +87,7 @@ fn list_keybindings() -> Result<Vec<KeyBindingJson>, String> {
 
 #[tauri::command(async)]
 async fn reload_config() -> Result<serde_json::Value, String> {
-    let path = config_ops::get_config_path();
-    let _config = addon_core::config::load(&path).map_err(|e| e.to_string())?;
+    // FIX-025: Removed redundant local config load — only the daemon reload matters.
     match send_async(&IpcMessage::request(IpcRequest::ReloadConfig)).await {
         Ok(msg) => {
             if let IpcMessage::Response(IpcResponse::ConfigLoaded { keys }) = msg {
@@ -89,7 +96,8 @@ async fn reload_config() -> Result<serde_json::Value, String> {
                     "keys": keys
                 }))
             } else {
-                Ok(serde_json::to_value(&msg).unwrap())
+                // FIX-021: Replace unwrap() with safe serialization
+                serde_json::to_value(&msg).map_err(|e| e.to_string())
             }
         }
         Err(e) => Ok(serde_json::json!({
@@ -118,7 +126,8 @@ async fn test_shortcut(
                     "message": message
                 }))
             } else {
-                Ok(serde_json::to_value(&msg).unwrap())
+                // FIX-021: Replace unwrap() with safe serialization
+                serde_json::to_value(&msg).map_err(|e| e.to_string())
             }
         }
         Err(e) => Ok(serde_json::json!({
@@ -131,8 +140,8 @@ async fn test_shortcut(
 
 /// Add a keybinding by properly constructing the action from user-supplied
 /// `action_type` and `action_data` fields (rather than creating dummy values).
-#[tauri::command]
-fn add_keybinding(
+#[tauri::command(async)]
+async fn add_keybinding(
     id: String,
     keys: String,
     action_type: String,
@@ -209,8 +218,14 @@ fn add_keybinding(
     config_ops::save_config(&path, &yaml).map_err(|e| e.to_string())?;
 
     // Reload daemon to pick up the new binding.
-    match tokio::net::UnixStream::connect(get_socket_path()).await {
-        Ok(mut stream) => {
+    // FIX-024: Wrap connection with timeout so GUI doesn't hang if daemon is dead.
+    let connect_result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio::net::UnixStream::connect(get_socket_path()),
+    )
+    .await;
+    match connect_result {
+        Ok(Ok(mut stream)) => {
             let req = IpcMessage::request(IpcRequest::ReloadConfig);
             let json = serde_json::to_string(&req).map_err(|e| e.to_string())?;
             stream
@@ -244,15 +259,15 @@ fn add_keybinding(
                 })),
             }
         }
-        Err(_) => Ok(serde_json::json!({
+        Ok(Err(_)) | Err(_) => Ok(serde_json::json!({
             "type": "partial_success",
-            "message": format!("Added {} but daemon reload failed (not running)", id)
+            "message": format!("Added {} but daemon reload failed (not running or timed out)", id)
         })),
     }
 }
 
-#[tauri::command]
-fn remove_keybinding(id: String) -> Result<serde_json::Value, String> {
+#[tauri::command(async)]
+async fn remove_keybinding(id: String) -> Result<serde_json::Value, String> {
     let path = config_ops::get_config_path();
     let content = config_ops::load_config(&path).map_err(|e| e.to_string())?;
     let mut config: addon_core::config::Config =
@@ -272,10 +287,53 @@ fn remove_keybinding(id: String) -> Result<serde_json::Value, String> {
     let yaml = serde_yaml::to_string(&config).map_err(|e| e.to_string())?;
     config_ops::save_config(&path, &yaml).map_err(|e| e.to_string())?;
 
-    Ok(serde_json::json!({
-        "type": "success",
-        "message": format!("Removed {}", id)
-    }))
+    // FIX-013: Notify daemon to reload config after removing keybinding
+    // FIX-024: Wrap connection with timeout so GUI doesn't hang if daemon is dead.
+    let connect_result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio::net::UnixStream::connect(get_socket_path()),
+    )
+    .await;
+    match connect_result {
+        Ok(Ok(mut stream)) => {
+            let req = IpcMessage::request(IpcRequest::ReloadConfig);
+            let json = serde_json::to_string(&req).map_err(|e| e.to_string())?;
+            stream
+                .write_all(json.as_bytes())
+                .await
+                .map_err(|e| e.to_string())?;
+            stream
+                .write_all(b"\n")
+                .await
+                .map_err(|e| e.to_string())?;
+            stream.flush().await.map_err(|e| e.to_string())?;
+
+            let mut buf_reader =
+                tokio::io::BufReader::new(stream.try_clone().map_err(|e| e.to_string())?);
+            let mut line = String::new();
+            buf_reader
+                .read_line(&mut line)
+                .await
+                .map_err(|e| e.to_string())?;
+
+            match serde_json::from_str::<IpcMessage>(line.trim()) {
+                Ok(IpcMessage::Response(IpcResponse::ConfigLoaded { .. })) => Ok(
+                    serde_json::json!({
+                        "type": "success",
+                        "message": format!("Removed {} and reloaded", id)
+                    }),
+                ),
+                _ => Ok(serde_json::json!({
+                    "type": "partial_success",
+                    "message": format!("Removed {} but daemon reload failed", id)
+                })),
+            }
+        }
+        Ok(Err(_)) | Err(_) => Ok(serde_json::json!({
+            "type": "partial_success",
+            "message": format!("Removed {} but daemon reload failed (not running or timed out)", id)
+        })),
+    }
 }
 
 #[tauri::command]

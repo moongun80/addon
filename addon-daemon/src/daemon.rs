@@ -10,6 +10,8 @@ use std::sync::Mutex;
 pub struct DaemonState {
     /// Whether the daemon is currently running.
     pub running: bool,
+    /// Whether the adapter has been initialized (tracks init state to avoid double-init).
+    pub initialized: bool,
     /// Current configuration.
     pub config: Config,
     /// Platform adapter (optional — not yet started).
@@ -23,6 +25,7 @@ pub type DaemonStateHandle = Arc<Mutex<DaemonState>>;
 pub fn create_daemon_state(config: Config, adapter: Box<dyn OsAdapter>) -> DaemonStateHandle {
     Arc::new(Mutex::new(DaemonState {
         running: false,
+        initialized: false,
         config,
         adapter: Some(adapter),
     }))

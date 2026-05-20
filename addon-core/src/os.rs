@@ -18,13 +18,12 @@ pub enum OsPlatform {
 }
 
 impl OsPlatform {
-    /// Returns the default platform used for "all platforms" conflict detection.
+    /// Returns an iterator over all known platforms.
     ///
-    /// Currently defaults to `Linux` as the common denominator for cross-platform
-    /// conflict resolution. This is used when a key binding doesn't specify
-    /// a platform override — conflicts are checked against this baseline platform.
-    pub fn platform_all() -> OsPlatform {
-        OsPlatform::Linux
+    /// Use this instead of the removed `platform_all()` when you need to
+    /// iterate every platform (e.g. for cross-platform conflict detection).
+    pub fn all() -> impl Iterator<Item = OsPlatform> {
+        [OsPlatform::Macos, OsPlatform::Windows, OsPlatform::Linux].into_iter()
     }
 }
 
@@ -51,6 +50,13 @@ pub trait OsAdapter: Send + Sync {
     ///
     /// Tears down the event tap / hook and releases resources.
     fn stop(&mut self) -> Result<(), Error>;
+
+    /// Update the adapter's internal configuration.
+    ///
+    /// Called during hot-reload so the adapter sees the latest config
+    /// before being re-initialized. Default implementation is a no-op
+    /// for adapters that don't store their own config copy.
+    fn set_config(&mut self, _config: &crate::config::Config) {}
 
     /// Returns the platform this adapter targets.
     fn get_platform(&self) -> OsPlatform;

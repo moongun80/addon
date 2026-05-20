@@ -55,6 +55,18 @@ pub struct KeyStroke {
     pub key: Key,
 }
 
+/// Normalize a key code string for consistent comparison.
+///
+/// - Single-character keys are uppercased (e.g. `"a"` → `"A"`)
+/// - Multi-character named keys are lowercased (e.g. `"Enter"` → `"enter"`)
+pub fn normalize_key_code(key: &str) -> String {
+    if key.chars().count() == 1 {
+        key.to_uppercase()
+    } else {
+        key.to_lowercase()
+    }
+}
+
 impl KeyStroke {
     /// Parses a key stroke from a human-readable string.
     ///
@@ -94,16 +106,27 @@ impl KeyStroke {
             modifiers.push(modifier);
         }
 
+        // Sort modifiers by discriminant value so the order is always
+        // deterministic regardless of input order. This ensures that
+        // "Ctrl+Shift+V" and "Shift+Ctrl+V" produce identical KeyStroke
+        // values, so Hash/Eq work correctly.
+        modifiers.sort_by_key(|m| match m {
+            Modifier::Control => 0,
+            Modifier::Shift => 1,
+            Modifier::Alt => 2,
+            Modifier::Option => 3,
+            Modifier::Command => 4,
+            Modifier::CapsLock => 5,
+        });
+        // Deduplicate since same modifiers will be adjacent after sort.
+        modifiers.dedup();
+
         if key_part.is_empty() {
             return Err(Error::InvalidKey(format!("empty key in stroke: {s:?}")));
         }
 
         // Normalize the key code
-        let code = if key_part.chars().count() == 1 {
-            key_part.to_uppercase()
-        } else {
-            key_part.to_string()
-        };
+        let code = normalize_key_code(key_part);
 
         Ok(Self {
             modifiers,

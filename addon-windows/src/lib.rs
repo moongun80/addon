@@ -113,6 +113,10 @@ impl WindowsAdapter {
 }
 
 impl OsAdapter for WindowsAdapter {
+    fn set_config(&mut self, config: &Config) {
+        self.config = config.clone();
+    }
+
     fn init(&mut self) -> Result<(), Error> {
         tracing::info!("Initializing Windows adapter");
         self.register_bindings()?;

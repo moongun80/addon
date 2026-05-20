@@ -8,8 +8,8 @@ use crate::keymap::KeyStroke;
 use crate::mapper::KeyMapper;
 use crate::os::OsPlatform;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
 use std::collections::HashMap;
+use std::path::Path;
 
 /// Top-level configuration.
 ///
@@ -17,7 +17,7 @@ use std::collections::HashMap;
 /// 1. `version` — file format version
 /// 2. `global` — global settings like modifier remapping
 /// 3. `keybindings` — the list of individual bindings
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Config {
     /// Config file version (e.g. `"1.0"`).
     pub version: String,
@@ -29,6 +29,62 @@ pub struct Config {
 }
 
 impl Config {
+    /// Validate this configuration for common errors.
+    ///
+    /// Returns a list of validation error messages. An empty list means the
+    /// configuration is valid.
+    ///
+    /// Checks performed:
+    /// - Duplicate binding IDs
+    /// - Empty key lists
+    /// - Unknown action types (checked via serde deserialization already,
+    ///   so we focus on runtime structural issues)
+    pub fn validate(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+        let mut seen_ids = std::collections::HashSet::new();
+
+        for binding in &self.keybindings {
+            // Check for duplicate IDs
+            if !seen_ids.insert(&binding.id) {
+                errors.push(format!("duplicate binding ID: {}", binding.id));
+            }
+
+            // Check for empty keys
+            if binding.keys.is_empty() {
+                errors.push(format!("binding '{}' has no keys defined", binding.id));
+            }
+
+            // Check for empty key strings within keys
+            for key_str in &binding.keys {
+                if key_str.trim().is_empty() {
+                    errors.push(format!("binding '{}' has an empty key string", binding.id));
+                }
+            }
+
+            // Check overrides for empty keys
+            if let Some(ref overrides) = binding.overrides {
+                if let Some(ref macos_keys) = overrides.macos {
+                    if macos_keys.is_empty() {
+                        errors.push(format!(
+                            "binding '{}' has empty macOS override keys",
+                            binding.id
+                        ));
+                    }
+                }
+                if let Some(ref windows_keys) = overrides.windows {
+                    if windows_keys.is_empty() {
+                        errors.push(format!(
+                            "binding '{}' has empty Windows override keys",
+                            binding.id
+                        ));
+                    }
+                }
+            }
+        }
+
+        errors
+    }
+
     /// Builds a [`KeyMapper`] from this configuration for the given platform.
     ///
     /// The mapper includes default keys and per-platform overrides.
@@ -38,8 +94,17 @@ impl Config {
         for binding in &self.keybindings {
             let keys = binding.effective_keys(platform);
             for key_str in keys {
-                if let Ok(stroke) = KeyStroke::parse(key_str) {
-                    map.insert(stroke, binding.action.clone());
+                match KeyStroke::parse(key_str) {
+                    Ok(stroke) => {
+                        map.insert(stroke, binding.action.clone());
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            key = %key_str,
+                            binding_id = %binding.id,
+                            "Invalid key binding, skipping"
+                        );
+                    }
                 }
             }
         }
@@ -49,7 +114,7 @@ impl Config {
 }
 
 /// Global settings shared across all bindings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct GlobalSettings {
     /// Modifier key remapping configuration.
     pub modifier_map: ModifierMap,
@@ -67,7 +132,7 @@ pub enum CommandFallback {
 }
 
 /// Maps command key behavior to platform-specific alternatives.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModifierMap {
     /// How the command key should fall back on Windows / Linux.
     pub command: CommandFallback,
@@ -77,14 +142,6 @@ impl Default for ModifierMap {
     fn default() -> Self {
         Self {
             command: CommandFallback::AltCtrl,
-        }
-    }
-}
-
-impl Default for GlobalSettings {
-    fn default() -> Self {
-        Self {
-            modifier_map: ModifierMap::default(),
         }
     }
 }
@@ -103,7 +160,7 @@ impl Default for Config {
 ///
 /// Each binding has a unique ID, one or more key strokes that trigger it,
 /// and an action to perform. Platform-specific overrides can be provided.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct KeyBinding {
     /// Unique identifier for this binding.
     pub id: String,
@@ -134,7 +191,7 @@ impl KeyBinding {
 /// Per-platform key binding overrides.
 ///
 /// If present, the platform-specific list replaces the default keys for that OS.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PlatformOverrides {
     /// macOS-specific key strokes.
     #[serde(skip_serializing_if = "Option::is_none")]
