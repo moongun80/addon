@@ -41,7 +41,11 @@ async fn send_async(msg: &IpcMessage) -> Result<IpcMessage, anyhow::Error> {
     // FIX-015: Use stream directly instead of cloning — avoids wasting a file descriptor.
     let mut buf_reader = BufReader::new(stream);
     let mut line = String::new();
-    buf_reader.read_line(&mut line).await?;
+    // FIX-005: Apply a 5-second read timeout so hung daemons don't stall the GUI.
+    tokio::time::timeout(std::time::Duration::from_secs(5), buf_reader.read_line(&mut line))
+        .await
+        .map_err(|_| anyhow::anyhow!("Daemon read timeout (no response within 5s)"))?
+        .map_err(|e| anyhow::anyhow!("Read error: {}", e))?;
     let result: IpcMessage = serde_json::from_str(line.trim())?;
     Ok(result)
 }

@@ -91,12 +91,10 @@ async fn main() -> Result<()> {
     info!("Daemon is ready — accepting IPC connections (Ctrl+C to stop)");
 
     // Create SIGTERM signal handler.
-    let mut sigterm =
-        unix_signal(SignalKind::terminate())
-            .unwrap_or_else(|e| {
-                eprintln!("Failed to register SIGTERM handler: {}", e);
-                std::process::exit(1);
-            });
+    let mut sigterm = unix_signal(SignalKind::terminate()).unwrap_or_else(|e| {
+        eprintln!("Failed to register SIGTERM handler: {}", e);
+        std::process::exit(1);
+    });
 
     loop {
         tokio::select! {
