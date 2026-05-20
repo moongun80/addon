@@ -18,13 +18,13 @@ pub fn init() -> crate::error::Result<()> {
 
     let filter = EnvFilter::try_from_default_env()
         .or_else(|_| EnvFilter::try_new("info"))
-        .map_err(|e| Error::Parse(format!("invalid RUST_LOG: {e}")))?;
+        .map_err(|e| Error::LogInit(format!("invalid RUST_LOG: {e}")))?;
 
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_span_events(FmtSpan::CLOSE)
         .try_init()
-        .map_err(|e| Error::Parse(format!("failed to initialize tracing: {e}")))?;
+        .map_err(|e| Error::LogInit(format!("failed to initialize tracing: {e}")))?;
 
     Ok(())
 }

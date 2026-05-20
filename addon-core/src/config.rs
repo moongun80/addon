@@ -199,6 +199,9 @@ pub struct PlatformOverrides {
     /// Windows-specific key strokes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub windows: Option<Vec<String>>,
+    /// Linux-specific key strokes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub linux: Option<Vec<String>>,
 }
 
 /// A concrete [`KeyMapper`] built from [`Config`].

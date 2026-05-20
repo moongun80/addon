@@ -141,7 +141,7 @@ fn process_request(req: &IpcRequest, state: &Arc<Mutex<DaemonState>>) -> IpcMess
             running: guard.running,
             pid: std::process::id(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            request_id: None,
+            request_id: request_id.clone(),
         },
 
         IpcRequest::StartDaemon { .. } => {
@@ -149,7 +149,7 @@ fn process_request(req: &IpcRequest, state: &Arc<Mutex<DaemonState>>) -> IpcMess
                 IpcResponse::TestResult {
                     success: false,
                     message: "Daemon is already running".to_string(),
-                    request_id: None,
+                    request_id: request_id.clone(),
                 }
             } else {
                 // FIX-009: Capture initialized flag before mutable borrow
@@ -232,6 +232,22 @@ fn process_request(req: &IpcRequest, state: &Arc<Mutex<DaemonState>>) -> IpcMess
             // Parse JSON as Config directly
             match serde_json::from_value::<addon_core::config::Config>(json.clone()) {
                 Ok(new_config) => {
+                    // FIX-201: Validate system commands to prevent shell injection
+                    for binding in &new_config.keybindings {
+                        if let addon_core::actions::Action::SystemCommand { command } = &binding.action {
+                            if let Err(e) = addon_core::actions::validate_system_command(command) {
+                                return IpcMessage::response(
+                                    IpcResponse::Error {
+                                        code: "COMMAND_VALIDATION_ERROR".to_string(),
+                                        details: format!("Binding '{}': {}", binding.id, e),
+                                        request_id: None,
+                                    }
+                                    .with_request_id(request_id),
+                                );
+                            }
+                        }
+                    }
+
                     // Detect conflicts before applying
                     let conflicts = addon_core::conflict::detect_conflicts(&new_config.keybindings);
                     if !conflicts.is_empty() {

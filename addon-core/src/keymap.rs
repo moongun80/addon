@@ -57,14 +57,11 @@ pub struct KeyStroke {
 
 /// Normalize a key code string for consistent comparison.
 ///
-/// - Single-character keys are uppercased (e.g. `"a"` → `"A"`)
-/// - Multi-character named keys are lowercased (e.g. `"Enter"` → `"enter"`)
+/// FIX-300: All key codes are uppercased for consistency.
+/// - Single-character keys: `"a"` → `"A"`
+/// - Multi-character named keys: `"enter"` → `"ENTER"`, `"F1"` → `"F1"`
 pub fn normalize_key_code(key: &str) -> String {
-    if key.chars().count() == 1 {
-        key.to_uppercase()
-    } else {
-        key.to_lowercase()
-    }
+    key.to_uppercase()
 }
 
 impl KeyStroke {

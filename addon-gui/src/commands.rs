@@ -205,6 +205,14 @@ async fn add_keybinding(
         }
     };
 
+    // FIX-101: Validate system commands to prevent shell injection
+    if action_type.as_str() == "system_command" {
+        if let addon_core::actions::Action::SystemCommand { command } = &action {
+            addon_core::actions::validate_system_command(command)
+                .map_err(|e| format!("Command validation failed: {}", e))?;
+        }
+    }
+
     let keys_vec: Vec<String> = keys.split(',').map(|s| s.trim().to_string()).collect();
 
     config.keybindings.push(addon_core::config::KeyBinding {
