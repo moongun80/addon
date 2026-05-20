@@ -240,6 +240,17 @@ impl IpcMessage {
 // JSON-serializable key binding representation
 // ---------------------------------------------------------------------------
 
+/// Platform-specific key overrides for IPC serialization.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PlatformOverridesJson {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub macos: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub windows: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub linux: Option<Vec<String>>,
+}
+
 /// A key binding representation suitable for IPC serialization.
 ///
 /// This is a flattened, JSON-friendly view of [`config::KeyBinding`]
@@ -253,6 +264,9 @@ pub struct KeyBindingJson {
     pub keys: Vec<String>,
     /// The action type (e.g. `"paste"`, `"launch"`, `"system_command"`).
     pub action_type: String,
+    /// Platform-specific key overrides (FIX-019).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overrides: Option<PlatformOverridesJson>,
 }
 
 impl From<crate::config::KeyBinding> for KeyBindingJson {
@@ -261,6 +275,11 @@ impl From<crate::config::KeyBinding> for KeyBindingJson {
             id: binding.id,
             keys: binding.keys,
             action_type: binding.action.variant_name(),
+            overrides: binding.overrides.map(|o| PlatformOverridesJson {
+                macos: o.macos,
+                windows: o.windows,
+                linux: o.linux,
+            }),
         }
     }
 }

@@ -51,6 +51,15 @@ pub struct XIEventMask {
 }
 
 // X11 core
+// FIX-020: The #[allow(dead_code)] attribute suppresses warnings for unused FFI
+// declarations. The following functions are reserved for future use:
+//   - XTestQueryExtension: XTest extension capability query
+//   - XkbKeycodeToKeysym: keycode-to-keysym translation (XKB)
+//   - XKeysymToString: keysym-to-string conversion (XKB)
+//   - XTestFakeMotionEvent: mouse motion simulation
+//   - XTestFakeButtonEvent: mouse button simulation
+//   - XQueryKeymap: query current modifier state
+// TODO: Remove these declarations when they are actually used or move to a dedicated FFI module.
 #[link(name = "X11", kind = "dylib")]
 #[allow(dead_code)]
 extern "C" {
@@ -71,12 +80,7 @@ extern "C" {
     fn XDefaultRootWindow(dpy: XDisplay) -> XWindow;
 
     // XTest extension (key simulation)
-    fn XTestFakeKeyEvent(
-        dpy: XDisplay,
-        keycode: c_uint,
-        is_press: c_int,
-        current_time: c_ulong,
-    ) -> c_int;
+    fn XTestFakeKeyEvent(dpy: XDisplay, keycode: c_uint, is_press: c_int, current_time: c_ulong);
     fn XTestFakeMotionEvent(
         dpy: XDisplay,
         screen: c_int,
@@ -120,7 +124,6 @@ const FALSE: c_int = 0;
 const TRUE: c_int = 1;
 const CURRENT_TIME: c_ulong = 0;
 const GRAB_MODE_ASYNC: c_int = 2;
-const REVERT_TO_NONE: XWindow = 0;
 
 // XInput2 event types
 #[allow(dead_code)]
@@ -285,16 +288,7 @@ impl LinuxX11Adapter {
             .map(|h| h.as_ptr())
             .ok_or_else(|| Error::AdapterNotAvailable("X11 display not open".to_string()))?;
 
-        let result = unsafe {
-            XTestFakeKeyEvent(dpy, keycode, if press { TRUE } else { FALSE }, CURRENT_TIME)
-        };
-
-        if result == FALSE {
-            return Err(Error::AdapterNotAvailable(format!(
-                "XTestFakeKeyEvent failed for keycode {}",
-                keycode
-            )));
-        }
+        unsafe { XTestFakeKeyEvent(dpy, keycode, if press { TRUE } else { FALSE }, CURRENT_TIME) };
 
         unsafe { XFlush(dpy) };
         Ok(())
@@ -311,8 +305,8 @@ impl LinuxX11Adapter {
         let result = unsafe {
             XGrabKeyboard(
                 dpy,
-                REVERT_TO_NONE,
-                TRUE, // owner_events: allow pointer events to pass through
+                XDefaultRootWindow(dpy), // FIX-006: Use root window instead of REVERT_TO_NONE (invalid grab_window)
+                TRUE,                    // owner_events: allow pointer events to pass through
                 GRAB_MODE_ASYNC,
                 GRAB_MODE_ASYNC,
                 CURRENT_TIME as c_ulong,

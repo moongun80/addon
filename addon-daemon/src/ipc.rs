@@ -53,6 +53,7 @@ impl IpcServer {
             &address,
             std::os::unix::fs::PermissionsExt::from_mode(0o600),
         )
+        .map_err(|e| tracing::warn!("Failed to restrict socket permissions: {}", e))
         .ok();
 
         tracing::info!("IPC server listening on {}", address.display());
@@ -102,13 +103,35 @@ async fn handle_client(
     loop {
         let mut line = String::new();
         buf_reader.read_line(&mut line).await?;
+        // FIX-017: Reject oversized messages to prevent memory exhaustion.
+        if line.len() > 1_048_576 {
+            tracing::warn!("IPC message exceeded 1MB size limit, dropping connection");
+            break;
+        }
+
         let line = line.trim_end_matches(['\n', '\r']);
 
         if line.is_empty() {
             break;
         }
 
-        let msg: IpcMessage = serde_json::from_str(line)?;
+        let msg: IpcMessage = match serde_json::from_str(line) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::error!("Failed to parse IPC message: {}", e);
+                let err_resp = IpcMessage::response(IpcResponse::Error {
+                    code: "PARSE_ERROR".to_string(),
+                    details: format!("Failed to parse message: {}", e),
+                    request_id: None,
+                });
+                if let Ok(json) = serde_json::to_string(&err_resp) {
+                    let _ = writer.write_all(json.as_bytes()).await;
+                    let _ = writer.write_all(b"\n").await;
+                    let _ = writer.flush().await;
+                }
+                continue;
+            }
+        };
 
         let resp = match &msg {
             IpcMessage::Request(req) => process_request(req, &daemon_state),
@@ -134,7 +157,10 @@ fn process_request(req: &IpcRequest, state: &Arc<std::sync::RwLock<DaemonState>>
     let request_id = req.request_id().map(str::to_string);
 
     // TestShortcut needs no lock at all — pure parsing
-    if let IpcRequest::TestShortcut { keys, action: _, .. } = req {
+    if let IpcRequest::TestShortcut {
+        keys, action: _, ..
+    } = req
+    {
         let mut all_ok = true;
         let mut messages: Vec<String> = Vec::new();
 
@@ -160,7 +186,7 @@ fn process_request(req: &IpcRequest, state: &Arc<std::sync::RwLock<DaemonState>>
             IpcResponse::TestResult {
                 success: all_ok,
                 message: msg_text,
-                request_id: request_id.clone(),
+                request_id: None,
             }
             .with_request_id(request_id),
         );
@@ -176,7 +202,7 @@ fn process_request(req: &IpcRequest, state: &Arc<std::sync::RwLock<DaemonState>>
             running: guard.running,
             pid: std::process::id(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            request_id: request_id.clone(),
+            request_id: None,
         };
         drop(guard); // Explicitly release read lock
         return IpcMessage::response(resp.with_request_id(request_id));
@@ -197,7 +223,7 @@ fn process_request(req: &IpcRequest, state: &Arc<std::sync::RwLock<DaemonState>>
                         IpcResponse::TestResult {
                             success: false,
                             message: "Daemon is already running".to_string(),
-                            request_id: request_id.clone(),
+                            request_id: None,
                         }
                         .with_request_id(request_id),
                     );
@@ -216,7 +242,7 @@ fn process_request(req: &IpcRequest, state: &Arc<std::sync::RwLock<DaemonState>>
                                     IpcResponse::Error {
                                         code: "ADAPTER_INIT_ERROR".to_string(),
                                         details: e.to_string(),
-                                        request_id: request_id.clone(),
+                                        request_id: None,
                                     }
                                     .with_request_id(request_id),
                                 );
@@ -231,7 +257,7 @@ fn process_request(req: &IpcRequest, state: &Arc<std::sync::RwLock<DaemonState>>
                                 IpcResponse::Error {
                                     code: "ADAPTER_START_ERROR".to_string(),
                                     details: e.to_string(),
-                                    request_id: request_id.clone(),
+                                    request_id: None,
                                 }
                                 .with_request_id(request_id),
                             );
@@ -246,7 +272,7 @@ fn process_request(req: &IpcRequest, state: &Arc<std::sync::RwLock<DaemonState>>
                         IpcResponse::TestResult {
                             success: true,
                             message: "Daemon started (no adapter available)".to_string(),
-                            request_id: request_id.clone(),
+                            request_id: None,
                         }
                         .with_request_id(request_id),
                     );
@@ -256,7 +282,7 @@ fn process_request(req: &IpcRequest, state: &Arc<std::sync::RwLock<DaemonState>>
                     running: true,
                     pid: std::process::id(),
                     version: env!("CARGO_PKG_VERSION").to_string(),
-                    request_id: request_id.clone(),
+                    request_id: None,
                 }
             }
 
@@ -269,7 +295,7 @@ fn process_request(req: &IpcRequest, state: &Arc<std::sync::RwLock<DaemonState>>
                             IpcResponse::Error {
                                 code: "ADAPTER_STOP_ERROR".to_string(),
                                 details: e.to_string(),
-                                request_id: request_id.clone(),
+                                request_id: None,
                             }
                             .with_request_id(request_id),
                         );
@@ -282,7 +308,7 @@ fn process_request(req: &IpcRequest, state: &Arc<std::sync::RwLock<DaemonState>>
                     IpcResponse::TestResult {
                         success: true,
                         message: "Daemon stopping".to_string(),
-                        request_id: request_id.clone(),
+                        request_id: None,
                     }
                     .with_request_id(request_id),
                 );
@@ -290,31 +316,33 @@ fn process_request(req: &IpcRequest, state: &Arc<std::sync::RwLock<DaemonState>>
 
             IpcRequest::SetConfig { config: json, .. } => {
                 // Parse and validate WITHOUT holding the lock
-                let new_config = match serde_json::from_value::<addon_core::config::Config>(json.clone()) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        drop(guard);
-                        return IpcMessage::response(
-                            IpcResponse::Error {
-                                code: "CONFIG_PARSE_ERROR".to_string(),
-                                details: e.to_string(),
-                                request_id: request_id.clone(),
-                            }
-                            .with_request_id(request_id),
-                        );
-                    }
-                };
+                let new_config =
+                    match serde_json::from_value::<addon_core::config::Config>(json.clone()) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            drop(guard);
+                            return IpcMessage::response(
+                                IpcResponse::Error {
+                                    code: "CONFIG_PARSE_ERROR".to_string(),
+                                    details: e.to_string(),
+                                    request_id: None,
+                                }
+                                .with_request_id(request_id),
+                            );
+                        }
+                    };
 
                 // FIX-201: Validate system commands to prevent shell injection
                 for binding in &new_config.keybindings {
-                    if let addon_core::actions::Action::SystemCommand { command } = &binding.action {
+                    if let addon_core::actions::Action::SystemCommand { command } = &binding.action
+                    {
                         if let Err(e) = addon_core::actions::validate_system_command(command) {
                             drop(guard);
                             return IpcMessage::response(
                                 IpcResponse::Error {
                                     code: "COMMAND_VALIDATION_ERROR".to_string(),
                                     details: format!("Binding '{}': {}", binding.id, e),
-                                    request_id: request_id.clone(),
+                                    request_id: None,
                                 }
                                 .with_request_id(request_id),
                             );
@@ -328,32 +356,12 @@ fn process_request(req: &IpcRequest, state: &Arc<std::sync::RwLock<DaemonState>>
                     tracing::warn!("{} conflict(s) in new config", conflicts.len());
                 }
 
-                // Update config
+                // FIX-011: Minimize critical section — update config under lock,
+                // then drop lock before expensive adapter lifecycle methods.
                 let old_running = guard.running;
                 guard.config = new_config.clone();
 
-                // Rebuild adapter if running
-                if old_running {
-                    let new_cfg = guard.config.clone();
-                    let mut init_ok = false;
-                    if let Some(ref mut adapter) = guard.adapter {
-                        adapter.set_config(&new_cfg);
-                        if adapter.stop().is_ok() {
-                            init_ok = adapter.init().is_ok();
-                            if init_ok {
-                                if let Err(e) = adapter.start() {
-                                    tracing::warn!("Adapter restart during SetConfig: {e}");
-                                }
-                            } else {
-                                tracing::warn!("Adapter reinit during SetConfig");
-                            }
-                        } else {
-                            tracing::warn!("Adapter stop during SetConfig");
-                        }
-                    }
-                    guard.initialized = init_ok;
-                }
-
+                // Collect keys for response while still under lock
                 let keys: Vec<addon_core::ipc::KeyBindingJson> = guard
                     .config
                     .keybindings
@@ -362,11 +370,50 @@ fn process_request(req: &IpcRequest, state: &Arc<std::sync::RwLock<DaemonState>>
                     .map(addon_core::ipc::KeyBindingJson::from)
                     .collect();
 
+                // Extract adapter and config for lifecycle outside the lock
+                let adapter_for_reinit = if old_running {
+                    guard.adapter.take()
+                } else {
+                    None
+                };
+                let new_cfg = guard.config.clone();
                 drop(guard);
+
+                // Adapter lifecycle OUTSIDE the lock
+                if old_running {
+                    if let Some(mut adapter) = adapter_for_reinit {
+                        adapter.set_config(&new_cfg);
+                        let stop_ok = adapter.stop().is_ok();
+                        let init_ok_val = if stop_ok {
+                            adapter.init().is_ok()
+                        } else {
+                            false
+                        };
+                        let start_ok = if init_ok_val {
+                            adapter.start().is_ok()
+                        } else {
+                            true
+                        };
+                        if !stop_ok {
+                            tracing::warn!("Adapter stop during SetConfig");
+                        } else if !init_ok_val {
+                            tracing::warn!("Adapter reinit during SetConfig");
+                        } else if !start_ok {
+                            tracing::warn!("Adapter start during SetConfig");
+                        }
+                        // Put adapter back under a fresh lock
+                        {
+                            let mut g = state.write().unwrap_or_else(|e| e.into_inner());
+                            g.adapter = Some(adapter);
+                            g.initialized = init_ok_val && start_ok;
+                        }
+                    }
+                }
+
                 return IpcMessage::response(
                     IpcResponse::ConfigLoaded {
                         keys,
-                        request_id: request_id.clone(),
+                        request_id: None,
                     }
                     .with_request_id(request_id),
                 );
@@ -382,7 +429,7 @@ fn process_request(req: &IpcRequest, state: &Arc<std::sync::RwLock<DaemonState>>
                             IpcResponse::Error {
                                 code: "RELOAD_ERROR".to_string(),
                                 details: e.to_string(),
-                                request_id: request_id.clone(),
+                                request_id: None,
                             }
                             .with_request_id(request_id),
                         );
@@ -397,7 +444,7 @@ fn process_request(req: &IpcRequest, state: &Arc<std::sync::RwLock<DaemonState>>
                             IpcResponse::Error {
                                 code: "RELOAD_ERROR".to_string(),
                                 details: e.to_string(),
-                                request_id: request_id.clone(),
+                                request_id: None,
                             }
                             .with_request_id(request_id),
                         );
@@ -420,20 +467,9 @@ fn process_request(req: &IpcRequest, state: &Arc<std::sync::RwLock<DaemonState>>
                 // Update state.
                 guard.config = new_config.clone();
 
-                // Rebuild adapter keymap if running.
+                // FIX-011: Extract adapter and config, drop lock before lifecycle.
                 let cfg_for_adapter = guard.config.clone();
-                let mut init_ok = true;
-                if let Some(ref mut adapter) = guard.adapter {
-                    adapter.set_config(&cfg_for_adapter);
-                    if adapter.stop().is_err() {
-                        init_ok = false;
-                    } else if adapter.init().is_err() {
-                        init_ok = false;
-                    } else if adapter.start().is_err() {
-                        init_ok = false;
-                    }
-                }
-                guard.initialized = init_ok;
+                let adapter_for_reinit = guard.adapter.take();
 
                 let keys: Vec<addon_core::ipc::KeyBindingJson> = guard
                     .config
@@ -444,10 +480,39 @@ fn process_request(req: &IpcRequest, state: &Arc<std::sync::RwLock<DaemonState>>
                     .collect();
 
                 drop(guard);
+
+                // Adapter lifecycle OUTSIDE the lock
+                if let Some(mut adapter) = adapter_for_reinit {
+                    adapter.set_config(&cfg_for_adapter);
+                    let stop_ok = adapter.stop().is_ok();
+                    let init_ok_val = if stop_ok {
+                        adapter.init().is_ok()
+                    } else {
+                        false
+                    };
+                    let start_ok = if init_ok_val {
+                        adapter.start().is_ok()
+                    } else {
+                        true
+                    };
+                    if !stop_ok {
+                        tracing::warn!("Adapter stop during ReloadConfig");
+                    } else if !init_ok_val {
+                        tracing::warn!("Adapter reinit during ReloadConfig");
+                    } else if !start_ok {
+                        tracing::warn!("Adapter start during ReloadConfig");
+                    }
+                    {
+                        let mut g = state.write().unwrap_or_else(|e| e.into_inner());
+                        g.adapter = Some(adapter);
+                        g.initialized = stop_ok && init_ok_val && start_ok;
+                    }
+                }
+
                 return IpcMessage::response(
                     IpcResponse::ConfigLoaded {
                         keys,
-                        request_id: request_id.clone(),
+                        request_id: None,
                     }
                     .with_request_id(request_id),
                 );

@@ -22,6 +22,7 @@ mod log;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use tokio::signal::unix::{signal as unix_signal, SignalKind};
 use tracing::{info, warn};
 
 /// Main entry point for the daemon.
@@ -89,6 +90,10 @@ async fn main() -> Result<()> {
     // ------------------------------------------------------------------
     info!("Daemon is ready — accepting IPC connections (Ctrl+C to stop)");
 
+    // Create SIGTERM signal handler.
+    let mut sigterm =
+        unix_signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
+
     loop {
         tokio::select! {
             // Accept a new IPC client connection.
@@ -104,6 +109,27 @@ async fn main() -> Result<()> {
             // Stop on Ctrl+C.
             _ = tokio::signal::ctrl_c() => {
                 info!("Shutting down daemon...");
+
+                // Stop adapter.
+                if let Ok(mut guard) = state.write() {
+                    if let Some(ref mut adapter) = guard.adapter {
+                        if let Err(e) = adapter.stop() {
+                            warn!("Adapter stop error: {}", e);
+                        }
+                    }
+                }
+
+                // Remove the socket file.
+                let socket_path = ipc::get_socket_path();
+                std::fs::remove_file(&socket_path).ok();
+
+                info!("Daemon stopped cleanly.");
+                break;
+            }
+
+            // Stop on SIGTERM.
+            _ = sigterm.recv() => {
+                info!("Shutting down daemon (SIGTERM)...");
 
                 // Stop adapter.
                 if let Ok(mut guard) = state.write() {

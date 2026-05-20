@@ -116,10 +116,22 @@
           if(status.type === 'daemon_status') { this.daemon.running = status.running; this.daemon.pid = status.pid; }
           this.bindings = (await invoke('list_keybindings')) || [];
         },
+        buildActionData() {
+          const type = this.form.actionType;
+          switch(type) {
+            case "paste": return { text: "" };
+            case "launch": return { path: "" };
+            case "remap": return { to: "" };
+            case "shortcut": return { shortcut: [] };
+            case "system_command": return { command: "" };
+            case "text_insert": return { text: "" };
+            default: return {};
+          }
+        },
         async addBinding() {
           try {
             const r = await invoke('add_keybinding', { id: this.form.id, keys: this.form.keys, action_type: this.form.actionType,
-            action_data: {} });
+            action_data: this.buildActionData() });
             this.testMsg = r.message || 'Added!';
             await this.refresh();
             this.form = { id: '', keys: '', actionType: 'paste' };
@@ -130,7 +142,7 @@
           catch(e) { this.testMsg = 'Error: ' + e; }
         },
         async testBinding(b) {
-          try { const r = await invoke('test_shortcut', { keys: b.keys, action: {type:'paste',text:'test'}}); this.testMsg = r.message || r.details || 'Test sent'; }
+          try { const r = await invoke('test_shortcut', { keys: b.keys, action: { type: b.action_type, text: 'test' } }); this.testMsg = r.message || r.details || 'Test sent'; }
           catch(e) { this.testMsg = 'Error: ' + e; }
         },
         async exportConfig(fmt) {

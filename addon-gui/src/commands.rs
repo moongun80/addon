@@ -38,7 +38,8 @@ async fn send_async(msg: &IpcMessage) -> Result<IpcMessage, anyhow::Error> {
     stream.flush().await?;
 
     // Read the newline-delimited response.
-    let mut buf_reader = BufReader::new(stream.try_clone()?);
+    // FIX-015: Use stream directly instead of cloning — avoids wasting a file descriptor.
+    let mut buf_reader = BufReader::new(stream);
     let mut line = String::new();
     buf_reader.read_line(&mut line).await?;
     let result: IpcMessage = serde_json::from_str(line.trim())?;
