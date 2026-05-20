@@ -75,8 +75,8 @@ async fn get_daemon_status() -> Result<serde_json::Value, String> {
     }
 }
 
-#[tauri::command]
-fn list_keybindings() -> Result<Vec<KeyBindingJson>, String> {
+#[tauri::command(async)]
+async fn list_keybindings() -> Result<Vec<KeyBindingJson>, String> {
     let path = config_ops::get_config_path();
     let config = addon_core::config::load(&path).map_err(|e| e.to_string())?;
     Ok(config
@@ -345,8 +345,8 @@ async fn remove_keybinding(id: String) -> Result<serde_json::Value, String> {
     }
 }
 
-#[tauri::command]
-fn export_config(format: String) -> Result<String, String> {
+#[tauri::command(async)]
+async fn export_config(format: String) -> Result<String, String> {
     let path = config_ops::get_config_path();
     config_ops::export_config(&path, &format).map_err(|e| e.to_string())
 }

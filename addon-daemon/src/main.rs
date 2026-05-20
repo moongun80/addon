@@ -92,7 +92,11 @@ async fn main() -> Result<()> {
 
     // Create SIGTERM signal handler.
     let mut sigterm =
-        unix_signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
+        unix_signal(SignalKind::terminate())
+            .unwrap_or_else(|e| {
+                eprintln!("Failed to register SIGTERM handler: {}", e);
+                std::process::exit(1);
+            });
 
     loop {
         tokio::select! {
