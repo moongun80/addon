@@ -9,8 +9,4 @@ description = "Linux adapter for the addon — platform-specific X11 key binding
 
 [dependencies]
 addon-core = { path = "../addon-core" }
-x11 = "2"
 tracing = { workspace = true }
-
-[lints.rust]
-unexpected_cfgs = { level = "allow", check-cfg = ['cfg(target_os, values("linux"))'] }

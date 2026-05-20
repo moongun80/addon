@@ -1,12 +1,14 @@
 [workspace]
 members = [
     "addon-core",
-    "addon-macos",
-    "addon-windows",
     "addon-linux",
     "addon-daemon",
 ]
-exclude = ["addon-gui"]  # Requires system libs (glib-2.0, gobject-2.0, gio-2.0, gtk-3, webkit2gtk-4.1)
+# macOS and Windows crates are platform-specific and excluded from
+# cross-compilation. Enable them on their respective platforms:
+# macos:   "addon-macos"
+# windows: "addon-windows"
+exclude = ["addon-macos", "addon-windows", "addon-gui"]
 resolver = "2"
 
 [workspace.package]
@@ -19,11 +21,12 @@ authors = ["건 장 <moongun80@gmail.com>"]
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
+serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "1"
 tokio = { version = "1", features = ["full"] }
-async-trait = "0.1"
 dirs = "5"
 anyhow = "1"
 addon-core = { path = "addon-core" }
+addon-linux = { path = "addon-linux" }

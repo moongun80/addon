@@ -174,10 +174,7 @@ pub fn get_config_path() -> Result<PathBuf> {
 fn create_adapter(_config: addon_core::config::Config) -> Result<Box<dyn addon_core::OsAdapter>> {
     #[cfg(feature = "linux")]
     {
-        let mapper = _config.build_keymapper(addon_core::os::OsPlatform::Linux);
-        return Ok(Box::new(addon_linux::LinuxX11Adapter::new(
-            _config, mapper,
-        )));
+        return Ok(Box::new(addon_linux::LinuxX11Adapter::new(_config)));
     }
 
     #[cfg(feature = "macos")]

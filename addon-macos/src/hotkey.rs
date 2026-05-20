@@ -4,8 +4,8 @@
 //! family of functions to install, manage, and tear down global hotkey
 //! registrations on macOS.
 
-use std::os::raw::{c_int, c_uint, c_ulong, c_void};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::os::raw::{c_int, c_uint, c_void};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::keymap::KeyStroke;
 
@@ -17,7 +17,7 @@ pub type HotKeyRef = *mut c_void;
 /// The high-order word is the creator code; the low-order word is
 /// a sequence number.  These are passed to the OS to identify
 /// which hotkey fired in the callback.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HotKeyId {
     creator: c_uint,
     id: c_uint,
@@ -27,10 +27,10 @@ pub struct HotKeyId {
 pub struct HotKey {
     /// Opaque reference to the Carbon hotkey.
     ref_: HotKeyRef,
+    /// Unique ID used to look up the callback in the global tables.
+    id: HotKeyId,
     /// Key stroke that triggered this hotkey.
     key_stroke: KeyStroke,
-    /// Callback invoked when the hotkey fires.
-    callback: Box<dyn Fn(&KeyStroke) + Send>,
 }
 
 /// Creator code used as part of every hotkey ID.
@@ -45,8 +45,6 @@ static NEXT_ID: AtomicU32 = AtomicU32::new(1);
 // ---------------------------------------------------------------------------
 
 type EventHandlerUPP = extern "C" fn(event: *mut c_void, userData: *mut c_void);
-
-type EventHotKeyID = c_ulong;
 
 type EventHotKeyRef = *mut c_void;
 
@@ -89,11 +87,11 @@ fn modifiers_to_cocoa(modifiers: &[addon_core::keymap::Modifier]) -> c_uint {
     let mut flags: c_uint = 0;
     for m in modifiers {
         match m {
-            addon_core::keymap::Modifier::Control  => flags |= 0x0010,
-            addon_core::keymap::Modifier::Shift    => flags |= 0x0002,
-            addon_core::keymap::Modifier::Alt      => flags |= 0x0008,
-            addon_core::keymap::Modifier::Option   => flags |= 0x0008,
-            addon_core::keymap::Modifier::Command  => flags |= 0x0001,
+            addon_core::keymap::Modifier::Control => flags |= 0x0010,
+            addon_core::keymap::Modifier::Shift => flags |= 0x0002,
+            addon_core::keymap::Modifier::Alt => flags |= 0x0008,
+            addon_core::keymap::Modifier::Option => flags |= 0x0008,
+            addon_core::keymap::Modifier::Command => flags |= 0x0001,
             addon_core::keymap::Modifier::CapsLock => flags |= 0x0004,
         }
     }
@@ -136,10 +134,14 @@ impl HotKey {
             return None;
         }
 
+        // Register the callback in the global tables so the Carbon event handler
+        // can dispatch to it when this hotkey fires.
+        register_callback(id, key_stroke.clone(), callback);
+
         Some(Self {
             ref_,
+            id,
             key_stroke,
-            callback,
         })
     }
 
@@ -158,6 +160,10 @@ impl HotKey {
 
 impl Drop for HotKey {
     fn drop(&mut self) {
+        // Clean up global callback tables
+        KEY_STROKES.lock().unwrap().remove(&self.id);
+        CALLBACKS.lock().unwrap().remove(&self.id);
+
         if !self.ref_.is_null() {
             unsafe { UnregisterEventHotKey(self.ref_) };
         }

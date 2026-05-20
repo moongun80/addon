@@ -121,7 +121,10 @@ async fn handle_client(
 
 /// Process a single client request and produce a response.
 fn process_request(req: &IpcRequest, state: &Arc<Mutex<DaemonState>>) -> IpcMessage {
-    let mut guard = state.lock().unwrap();
+    let mut guard = match state.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    };
 
     match req {
         IpcRequest::GetStatus => IpcMessage::response(IpcResponse::DaemonStatus {
@@ -182,24 +185,44 @@ fn process_request(req: &IpcRequest, state: &Arc<Mutex<DaemonState>>) -> IpcMess
         }
 
         IpcRequest::SetConfig { config: json } => {
-            match serde_json::from_value::<DaemonConfig>(json.clone()) {
-                Ok(_cfg) => {
-                    // Try to parse as full Config and update daemon state
-                    if let Ok(new_config) = serde_json::from_value::<addon_core::config::Config>(json.clone()) {
-                        guard.config = new_config.clone();
-                        // Rebuild adapter (stop → init → start) if running.
+            // Parse JSON as Config directly
+            match serde_json::from_value::<addon_core::config::Config>(json.clone()) {
+                Ok(new_config) => {
+                    // Detect conflicts before applying
+                    let conflicts = addon_core::conflict::detect_conflicts(&new_config.keybindings);
+                    if !conflicts.is_empty() {
+                        tracing::warn!(
+                            "{} conflict(s) in new config",
+                            conflicts.len()
+                        );
+                    }
+
+                    // Update config
+                    let old_running = guard.running;
+                    guard.config = new_config.clone();
+
+                    // Rebuild adapter if running
+                    if old_running {
                         if let Some(ref mut adapter) = guard.adapter {
+                            // Stop, reinit, restart with new config
                             if let Err(e) = adapter.stop() {
-                                tracing::warn!("Failed to stop adapter during SetConfig: {e}");
+                                tracing::warn!("Adapter stop during SetConfig: {e}");
                             }
                             if let Err(e) = adapter.init() {
-                                tracing::warn!("Failed to reinit adapter during SetConfig: {e}");
+                                tracing::warn!("Adapter reinit during SetConfig: {e}");
                             } else if let Err(e) = adapter.start() {
-                                tracing::warn!("Failed to restart adapter during SetConfig: {e}");
+                                tracing::warn!("Adapter restart during SetConfig: {e}");
                             }
                         }
                     }
-                    let keys = cfg_keys_from_json(json);
+
+                    let keys: Vec<addon_core::ipc::KeyBindingJson> = guard
+                        .config
+                        .keybindings
+                        .iter()
+                        .cloned()
+                        .map(addon_core::ipc::KeyBindingJson::from)
+                        .collect();
                     IpcMessage::response(IpcResponse::ConfigLoaded { keys })
                 }
                 Err(e) => IpcMessage::response(IpcResponse::Error {
@@ -280,39 +303,10 @@ fn reload_config_inner(
     let keys: Vec<addon_core::ipc::KeyBindingJson> = guard
         .config
         .keybindings
-        .clone()
-        .into_iter()
+        .iter()
+        .cloned()
         .map(addon_core::ipc::KeyBindingJson::from)
         .collect();
 
     Ok(keys)
-}
-
-/// Extract key bindings from a JSON config value (for SetConfig requests).
-fn cfg_keys_from_json(json: &serde_json::Value) -> Vec<addon_core::ipc::KeyBindingJson> {
-    serde_json::from_value::<addon_core::config::Config>(json.clone())
-        .map(|config| {
-            config
-                .keybindings
-                .into_iter()
-                .map(addon_core::ipc::KeyBindingJson::from)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// A lightweight config struct used for IPC message validation.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct DaemonConfig {
-    version: String,
-    #[serde(default)]
-    keybindings: Vec<DaemonKeyBinding>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct DaemonKeyBinding {
-    id: String,
-    keys: Vec<String>,
-    #[serde(rename = "type")]
-    action_type: String,
 }

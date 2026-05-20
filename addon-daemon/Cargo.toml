@@ -9,8 +9,6 @@ description = "Daemon binary for the addon — background service with IPC suppo
 
 [dependencies]
 addon-core = { path = "../addon-core" }
-addon-macos = { path = "../addon-macos", optional = true }
-addon-windows = { path = "../addon-windows", optional = true }
 addon-linux = { path = "../addon-linux", optional = true }
 tokio = { workspace = true, features = ["full", "signal"] }
 tracing.workspace = true
@@ -18,16 +16,21 @@ tracing-subscriber.workspace = true
 serde = { workspace = true }
 serde_json = "1"
 cfg-if = "1"
-flume = "0.11"
 thiserror.workspace = true
 anyhow.workspace = true
 dirs.workspace = true
 
+# macOS and Windows adapters are excluded from the workspace on Linux.
+# To build on those platforms, add the respective crates to workspace members
+# and uncomment the optional dependency here:
+# addon-macos = { path = "../addon-macos", optional = true }
+# addon-windows = { path = "../addon-windows", optional = true }
+
 [features]
-default = []
-macos = ["addon-macos"]
-windows = ["addon-windows"]
-linux = ["addon-linux"]
+default = ["linux"]
+macos = []
+windows = []
+linux = ["dep:addon-linux"]
 
 [[bin]]
 name = "addon"
