@@ -4,7 +4,7 @@
 use addon_core::config::Config;
 use addon_core::os::OsAdapter;
 use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::RwLock;
 
 /// The mutable state shared between the daemon loop and IPC handler.
 pub struct DaemonState {
@@ -19,11 +19,12 @@ pub struct DaemonState {
 }
 
 /// Shared state handle — cloneable reference to the daemon state.
-pub type DaemonStateHandle = Arc<Mutex<DaemonState>>;
+/// FIX-200: Use RwLock instead of Mutex to allow concurrent reads.
+pub type DaemonStateHandle = Arc<RwLock<DaemonState>>;
 
 /// Create the initial daemon state from a config and OS adapter.
 pub fn create_daemon_state(config: Config, adapter: Box<dyn OsAdapter>) -> DaemonStateHandle {
-    Arc::new(Mutex::new(DaemonState {
+    Arc::new(RwLock::new(DaemonState {
         running: false,
         initialized: false,
         config,

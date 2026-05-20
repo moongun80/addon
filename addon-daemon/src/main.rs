@@ -106,7 +106,7 @@ async fn main() -> Result<()> {
                 info!("Shutting down daemon...");
 
                 // Stop adapter.
-                if let Ok(mut guard) = state.lock() {
+                if let Ok(mut guard) = state.write() {
                     if let Some(ref mut adapter) = guard.adapter {
                         if let Err(e) = adapter.stop() {
                             warn!("Adapter stop error: {}", e);
