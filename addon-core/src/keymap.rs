@@ -115,6 +115,12 @@ impl KeyStroke {
             Modifier::Command => 4,
             Modifier::CapsLock => 5,
         });
+        // Normalize Option to Alt since they are the same physical key
+        for m in &mut modifiers {
+            if *m == Modifier::Option {
+                *m = Modifier::Alt;
+            }
+        }
         // Deduplicate since same modifiers will be adjacent after sort.
         modifiers.dedup();
 

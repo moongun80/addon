@@ -97,6 +97,19 @@ pub fn detect_conflicts(keybindings: &[KeyBinding]) -> Vec<Conflict> {
                     entry.push(binding.id.clone());
                 }
             }
+            if let Some(ref linux_keys) = overrides.linux {
+                for key in linux_keys {
+                    let canonical = match KeyStroke::parse(key) {
+                        Ok(stroke) => stroke.display(),
+                        Err(e) => {
+                            tracing::warn!("skipping unparseable key {:?} for binding {} (Linux override): {}", key, binding.id, e);
+                            continue;
+                        }
+                    };
+                    let entry = lookup.entry((OsPlatform::Linux, canonical)).or_default();
+                    entry.push(binding.id.clone());
+                }
+            }
         }
     }
 

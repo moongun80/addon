@@ -464,10 +464,8 @@ fn process_request(req: &IpcRequest, state: &Arc<std::sync::RwLock<DaemonState>>
                     }
                 }
 
-                // Update state.
+                // Update state and reinitialize adapter.
                 guard.config = new_config.clone();
-
-                // FIX-011: Extract adapter and config, drop lock before lifecycle.
                 let cfg_for_adapter = guard.config.clone();
                 let adapter_for_reinit = guard.adapter.take();
 

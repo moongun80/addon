@@ -287,17 +287,3 @@ impl From<crate::config::KeyBinding> for KeyBindingJson {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-impl crate::actions::Action {
-    /// Return a short string identifying the action variant.
-    fn variant_name(&self) -> String {
-        match self {
-            Self::Paste { .. } => "paste".to_string(),
-            Self::Launch { .. } => "launch".to_string(),
-            Self::Remap { .. } => "remap".to_string(),
-            Self::Shortcut { .. } => "shortcut".to_string(),
-            Self::SystemCommand { .. } => "system_command".to_string(),
-            Self::TextInsert { .. } => "text_insert".to_string(),
-        }
-    }
-}

@@ -111,48 +111,37 @@ async fn main() -> Result<()> {
             // Stop on Ctrl+C.
             _ = tokio::signal::ctrl_c() => {
                 info!("Shutting down daemon...");
-
-                // Stop adapter.
-                if let Ok(mut guard) = state.write() {
-                    if let Some(ref mut adapter) = guard.adapter {
-                        if let Err(e) = adapter.stop() {
-                            warn!("Adapter stop error: {}", e);
-                        }
-                    }
-                }
-
-                // Remove the socket file.
-                let socket_path = ipc::get_socket_path();
-                std::fs::remove_file(&socket_path).ok();
-
-                info!("Daemon stopped cleanly.");
+                shutdown_daemon(&state);
                 break;
             }
 
             // Stop on SIGTERM.
             _ = sigterm.recv() => {
                 info!("Shutting down daemon (SIGTERM)...");
-
-                // Stop adapter.
-                if let Ok(mut guard) = state.write() {
-                    if let Some(ref mut adapter) = guard.adapter {
-                        if let Err(e) = adapter.stop() {
-                            warn!("Adapter stop error: {}", e);
-                        }
-                    }
-                }
-
-                // Remove the socket file.
-                let socket_path = ipc::get_socket_path();
-                std::fs::remove_file(&socket_path).ok();
-
-                info!("Daemon stopped cleanly.");
+                shutdown_daemon(&state);
                 break;
             }
         }
     }
 
     Ok(())
+}
+
+/// Gracefully shut down the daemon: stop adapter and clean up socket.
+fn shutdown_daemon(state: &daemon::DaemonStateHandle) {
+    if let Ok(mut guard) = state.write() {
+        if let Some(ref mut adapter) = guard.adapter {
+            if let Err(e) = adapter.stop() {
+                warn!("Adapter stop error: {}", e);
+            }
+        }
+    }
+
+    // Remove the socket file.
+    let socket_path = ipc::get_socket_path();
+    std::fs::remove_file(&socket_path).ok();
+
+    info!("Daemon stopped cleanly.");
 }
 
 /// Returns the path to the configuration file.

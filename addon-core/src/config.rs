@@ -63,20 +63,37 @@ impl Config {
 
             // Check overrides for empty keys
             if let Some(ref overrides) = binding.overrides {
+                // Check macOS override keys
                 if let Some(ref macos_keys) = overrides.macos {
-                    if macos_keys.is_empty() {
-                        errors.push(format!(
-                            "binding '{}' has empty macOS override keys",
-                            binding.id
-                        ));
+                    for key_str in macos_keys {
+                        if key_str.trim().is_empty() {
+                            errors.push(format!(
+                                "binding '{}' has an empty macOS override key string",
+                                binding.id
+                            ));
+                        }
                     }
                 }
+                // Check Windows override keys
                 if let Some(ref windows_keys) = overrides.windows {
-                    if windows_keys.is_empty() {
-                        errors.push(format!(
-                            "binding '{}' has empty Windows override keys",
-                            binding.id
-                        ));
+                    for key_str in windows_keys {
+                        if key_str.trim().is_empty() {
+                            errors.push(format!(
+                                "binding '{}' has an empty Windows override key string",
+                                binding.id
+                            ));
+                        }
+                    }
+                }
+                // Check Linux override keys
+                if let Some(ref linux_keys) = overrides.linux {
+                    for key_str in linux_keys {
+                        if key_str.trim().is_empty() {
+                            errors.push(format!(
+                                "binding '{}' has an empty Linux override key string",
+                                binding.id
+                            ));
+                        }
                     }
                 }
             }
@@ -180,7 +197,7 @@ impl KeyBinding {
             match platform {
                 OsPlatform::Macos => overrides.macos.as_deref().unwrap_or(&self.keys),
                 OsPlatform::Windows => overrides.windows.as_deref().unwrap_or(&self.keys),
-                _ => &self.keys,
+                OsPlatform::Linux => overrides.linux.as_deref().unwrap_or(&self.keys),
             }
         } else {
             &self.keys

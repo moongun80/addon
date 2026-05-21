@@ -3,6 +3,7 @@
 /// Defines the [`Action`] enum which represents the operation to perform
 /// when a key binding is triggered.
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 /// An action to perform when a key binding fires.
 ///
@@ -48,6 +49,20 @@ pub enum Action {
     },
 }
 
+impl Action {
+    /// Return a short string identifying the action variant.
+    pub fn variant_name(&self) -> String {
+        match self {
+            Self::Paste { .. } => "paste".to_string(),
+            Self::Launch { .. } => "launch".to_string(),
+            Self::Remap { .. } => "remap".to_string(),
+            Self::Shortcut { .. } => "shortcut".to_string(),
+            Self::SystemCommand { .. } => "system_command".to_string(),
+            Self::TextInsert { .. } => "text_insert".to_string(),
+        }
+    }
+}
+
 /// Shell metacharacters that could lead to command injection.
 /// These characters allow chaining or redirecting commands when passed
 /// to a shell interpreter.
@@ -89,5 +104,3 @@ pub fn validate_system_command(command: &str) -> Result<(), String> {
     }
     Ok(())
 }
-
-use std::collections::HashSet;
