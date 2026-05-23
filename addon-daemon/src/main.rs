@@ -187,15 +187,15 @@ pub fn get_config_path() -> Result<PathBuf> {
 /// - `--features linux`  → Linux X11 adapter
 /// - `--features macos`  → macOS Carbon adapter
 /// - `--features windows` → Windows hook adapter
-fn create_adapter(_config: addon_core::config::Config) -> Result<Box<dyn addon_core::OsAdapter>> {
+fn create_adapter(config: addon_core::config::Config) -> Result<Box<dyn addon_core::OsAdapter>> {
     #[cfg(feature = "linux")]
     {
-        Ok(Box::new(addon_linux::LinuxX11Adapter::new(_config)))
+        Ok(Box::new(addon_linux::LinuxX11Adapter::new(config)))
     }
 
     #[cfg(feature = "macos")]
     {
-        let mapper = _config.build_keymapper(addon_core::os::OsPlatform::Macos);
+        let mapper = config.build_keymapper(addon_core::os::OsPlatform::Macos);
         // Provide an action dispatcher that logs matched actions.
         // In a production build, this would dispatch to the actual
         // action execution backend (e.g. AppleScript, Cocoa events).
@@ -209,15 +209,15 @@ fn create_adapter(_config: addon_core::config::Config) -> Result<Box<dyn addon_c
             );
         });
         return Ok(Box::new(addon_macos::MacOsAdapter::new(
-            _config, mapper, dispatcher,
+            config, mapper, dispatcher,
         )));
     }
 
     #[cfg(feature = "windows")]
     {
-        let mapper = _config.build_keymapper(addon_core::os::OsPlatform::Windows);
+        let mapper = config.build_keymapper(addon_core::os::OsPlatform::Windows);
         return Ok(Box::new(addon_windows::WindowsAdapter::new(
-            _config, mapper,
+            config, mapper,
         )));
     }
 

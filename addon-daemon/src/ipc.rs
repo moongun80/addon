@@ -49,12 +49,18 @@ impl IpcServer {
         let listener = UnixListener::bind(&address)?;
 
         // FIX-012: Restrict socket file permissions to owner-only (0o600)
+        // FIX-SEC-002: Fail daemon startup if permissions cannot be set,
+        // because a world-accessible socket is a security risk.
         std::fs::set_permissions(
             &address,
             std::os::unix::fs::PermissionsExt::from_mode(0o600),
-        )
-        .map_err(|e| tracing::warn!("Failed to restrict socket permissions: {}", e))
-        .ok();
+        ).map_err(|e| {
+            tracing::error!("CRITICAL: Failed to restrict socket permissions: {}", e);
+            std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("cannot restrict socket permissions: {}", e),
+            )
+        })?;
 
         tracing::info!("IPC server listening on {}", address.display());
 
@@ -100,6 +106,10 @@ async fn handle_client(
     let (reader, mut writer) = stream.into_split();
     let mut buf_reader = tokio::io::BufReader::new(reader);
 
+    // FIX-020: Track consecutive parse failures to prevent DoS from malformed input.
+    let mut consecutive_parse_failures: u32 = 0;
+    const MAX_PARSE_FAILURES: u32 = 10;
+
     loop {
         let mut line = String::new();
         buf_reader.read_line(&mut line).await?;
@@ -116,9 +126,22 @@ async fn handle_client(
         }
 
         let msg: IpcMessage = match serde_json::from_str(line) {
-            Ok(m) => m,
+            Ok(m) => {
+                // Reset failure counter on successful parse
+                consecutive_parse_failures = 0;
+                m
+            }
             Err(e) => {
-                tracing::error!("Failed to parse IPC message: {}", e);
+                consecutive_parse_failures += 1;
+                if consecutive_parse_failures >= MAX_PARSE_FAILURES {
+                    tracing::warn!(
+                        "Dropping IPC connection after {} consecutive parse failures",
+                        consecutive_parse_failures
+                    );
+                    break;
+                }
+                tracing::error!("Failed to parse IPC message (failure {}/{}): {}", 
+                    consecutive_parse_failures, MAX_PARSE_FAILURES, e);
                 let err_resp = IpcMessage::response(IpcResponse::Error {
                     code: "PARSE_ERROR".to_string(),
                     details: format!("Failed to parse message: {}", e),
@@ -516,8 +539,19 @@ fn process_request(req: &IpcRequest, state: &Arc<std::sync::RwLock<DaemonState>>
                 );
             }
 
-            // Already handled above
-            IpcRequest::GetStatus { .. } | IpcRequest::TestShortcut { .. } => unreachable!(),
+            // Fallback for unknown request variants — prevents panic if new
+            // IpcRequest variants are added to addon-core without updating here.
+            _ => {
+                drop(guard);
+                return IpcMessage::response(
+                    IpcResponse::Error {
+                        code: "UNKNOWN_REQUEST".to_string(),
+                        details: format!("Unknown IPC request type received"),
+                        request_id: None,
+                    }
+                    .with_request_id(request_id),
+                );
+            }
         }
     };
 

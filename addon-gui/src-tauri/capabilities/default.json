@@ -1,15 +1,9 @@
 {
   "identifier": "default",
-  "description": "Default Tauri 2 capability",
+  "description": "Minimal permissions for addon tray app",
   "windows": ["main"],
   "permissions": [
-    {
-      "identifier": "core:default",
-      "defaultPermission": true
-    },
-    {
-      "identifier": "shell:allow-open",
-      "defaultPermission": false
-    }
+    "core:default",
+    "core:window:default"
   ]
 }

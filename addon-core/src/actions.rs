@@ -82,15 +82,16 @@ pub(crate) fn has_shell_metacharacters(s: &str) -> bool {
 /// Validate a system command string for safe execution.
 ///
 /// Returns `Ok(())` if the command passes the strict allowlist check
-/// (only alphanumeric characters and a minimal set of safe punctuation),
-/// or `Err(String)` describing the disallowed characters found.
+/// (only alphanumeric characters and a minimal set of safe punctuation).
 ///
 /// Commands containing shell metacharacters (e.g. `;`, `|`, `&`, `$`, `` ` ``,
 /// `(`, `)`, `<`, `>`, `'`, `"`, `\`, `!`, `#`, `*`, `?`, `[`, `]`, `^`,
 /// `~`, `%`, `{`, `}`, `|`, `=`, `:`, `@`, `+`) are rejected.
-pub fn validate_system_command(command: &str) -> Result<(), String> {
+pub fn validate_system_command(command: &str) -> crate::error::Result<()> {
     if command.is_empty() {
-        return Err("Empty command".to_string());
+        return Err(crate::error::Error::ShellInjection(
+            "Empty command".to_string(),
+        ));
     }
     if has_shell_metacharacters(command) {
         let bad_chars: String = command
@@ -99,10 +100,10 @@ pub fn validate_system_command(command: &str) -> Result<(), String> {
             .collect::<BTreeSet<_>>()
             .iter()
             .collect();
-        return Err(format!(
+        return Err(crate::error::Error::ShellInjection(format!(
             "Command contains potentially unsafe shell metacharacters: {}",
             bad_chars
-        ));
+        )));
     }
     Ok(())
 }

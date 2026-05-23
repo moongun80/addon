@@ -22,11 +22,3 @@ pub fn init() -> Result<()> {
     );
     Ok(())
 }
-
-/// Returns the path to the daemon log directory.
-#[allow(dead_code)]
-pub fn log_dir() -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join("addon").join("logs");
-    let _ = std::fs::create_dir_all(&dir);
-    dir
-}

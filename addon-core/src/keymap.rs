@@ -86,7 +86,7 @@ impl KeyStroke {
         }
 
         let mut modifiers = Vec::new();
-        let key_part = parts[parts.len() - 1];
+        let key_part = parts[parts.len() - 1].trim();
 
         for &part in &parts[..parts.len() - 1] {
             let modifier = match part.trim() {

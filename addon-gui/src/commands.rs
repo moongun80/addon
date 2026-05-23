@@ -4,10 +4,8 @@
 //! using a newline-delimited JSON protocol. Commands are async because
 //! socket I/O must not block the Tauri runtime.
 
-use std::io::{BufRead, BufReader, Write};
-
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
-use tokio::io::{AsyncWriteExt, AsyncReadExt};
 
 use addon_core::ipc::{IpcMessage, IpcRequest, IpcResponse, KeyBindingJson};
 
@@ -157,6 +155,17 @@ async fn add_keybinding(
     let mut config: addon_core::config::Config =
         serde_yaml::from_str(&content).map_err(|e| e.to_string())?;
 
+    // FIX-SEC-001: Validate system_command BEFORE constructing Action
+    // to prevent potentially dangerous commands from entering the config.
+    if action_type.as_str() == "system_command" {
+        let cmd = action_data
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        addon_core::actions::validate_system_command(cmd)
+            .map_err(|e| format!("Command validation failed: {}", e))?;
+    }
+
     // Properly construct the action from action_type + action_data.
     let action = match action_type.as_str() {
         "paste" => addon_core::actions::Action::Paste {
@@ -209,14 +218,6 @@ async fn add_keybinding(
             return Err(format!("Unknown action type: {action_type}"));
         }
     };
-
-    // FIX-101: Validate system commands to prevent shell injection
-    if action_type.as_str() == "system_command" {
-        if let addon_core::actions::Action::SystemCommand { command } = &action {
-            addon_core::actions::validate_system_command(command)
-                .map_err(|e| format!("Command validation failed: {}", e))?;
-        }
-    }
 
     let keys_vec: Vec<String> = keys.split(',').map(|s| s.trim().to_string()).collect();
 
