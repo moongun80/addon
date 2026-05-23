@@ -57,10 +57,7 @@ async fn main() -> Result<()> {
     if !conflicts.is_empty() {
         warn!("{} key binding conflict(s) detected", conflicts.len());
         for c in &conflicts {
-            warn!(
-                "  - {} ↔ {} [platform: {:?}]",
-                c.binding1, c.binding2, c.platform
-            );
+            warn!("  - {} ↔ {} [key: {}]", c.bindings[0], c.bindings[1], c.key);
         }
     } else {
         info!("No key binding conflicts detected.");

@@ -456,10 +456,10 @@ fn process_request(req: &IpcRequest, state: &Arc<std::sync::RwLock<DaemonState>>
                 if !conflicts.is_empty() {
                     for c in &conflicts {
                         tracing::warn!(
-                            "Conflict: {} ↔ {} [platform: {:?}]",
-                            c.binding1,
-                            c.binding2,
-                            c.platform
+                            "Conflict: {} ↔ {} [key: {}]",
+                            c.bindings[0],
+                            c.bindings[1],
+                            c.key
                         );
                     }
                 }

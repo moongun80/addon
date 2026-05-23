@@ -6,17 +6,15 @@ use crate::config::KeyBinding;
 use crate::keymap::KeyStroke;
 use crate::os::OsPlatform;
 
-/// A detected conflict between two key bindings.
+/// A detected conflict between two or more key bindings.
 ///
-/// If `platform` is `None`, the conflict applies to all platforms.
+/// Multiple bindings share the same key stroke on the given platform.
 #[derive(Debug, Clone)]
 pub struct Conflict {
-    /// ID of the first conflicting binding.
-    pub binding1: String,
-    /// ID of the second conflicting binding.
-    pub binding2: String,
-    /// The platform affected, or `None` for all platforms.
-    pub platform: Option<OsPlatform>,
+    /// The canonical key string involved in the conflict.
+    pub key: String,
+    /// IDs of all bindings that share this key (at least 2).
+    pub bindings: Vec<String>,
 }
 
 /// Detect conflicts among the given key bindings.
@@ -26,8 +24,8 @@ pub struct Conflict {
 ///
 /// # Algorithm
 ///
-/// 1. For each binding, expand its key strokes (applying platform overrides
-///    if a platform is specified).
+/// 1. For each platform, iterate all bindings and resolve their effective
+///    keys (including platform overrides) via `KeyBinding::effective_keys()`.
 /// 2. Parse each key string into a KeyStroke to normalize modifier ordering
 ///    (e.g. "Ctrl+Shift+V" == "Shift+Ctrl+V"), then use the canonical
 ///    display string as the lookup key.
@@ -35,96 +33,42 @@ pub struct Conflict {
 /// 4. Where the map value has more than one binding ID, emit a conflict.
 pub fn detect_conflicts(keybindings: &[KeyBinding]) -> Vec<Conflict> {
     let mut conflicts = Vec::new();
-
-    // Build a map: (platform, canonical_key) -> list of binding IDs
     let mut lookup: std::collections::HashMap<(OsPlatform, String), Vec<String>> =
         std::collections::HashMap::new();
 
-    // All platforms for default bindings
-    let all_platforms = [OsPlatform::Macos, OsPlatform::Windows, OsPlatform::Linux];
-
-    for binding in keybindings {
-        // Add bindings for ALL platforms (default keys)
-        for key in &binding.keys {
-            let canonical = match KeyStroke::parse(key) {
-                Ok(stroke) => stroke.display(),
-                Err(e) => {
-                    tracing::warn!(
-                        "skipping unparseable key {:?} for binding {}: {}",
-                        key,
-                        binding.id,
-                        e
-                    );
-                    continue;
-                }
-            };
-            for platform in &all_platforms {
-                let entry = lookup.entry((*platform, canonical.clone())).or_default();
+    for platform in OsPlatform::all() {
+        for binding in keybindings {
+            for key in binding.effective_keys(platform) {
+                let canonical = match KeyStroke::parse(key) {
+                    Ok(stroke) => stroke.display(),
+                    Err(e) => {
+                        tracing::warn!(
+                            "skipping unparseable key {:?} for binding {} on {:?}: {}",
+                            key,
+                            binding.id,
+                            platform,
+                            e
+                        );
+                        continue;
+                    }
+                };
+                let entry = lookup.entry((platform, canonical)).or_default();
                 entry.push(binding.id.clone());
-            }
-        }
-
-        // Add per-platform overrides
-        if let Some(ref overrides) = binding.overrides {
-            if let Some(ref macos_keys) = overrides.macos {
-                for key in macos_keys {
-                    let canonical = match KeyStroke::parse(key) {
-                        Ok(stroke) => stroke.display(),
-                        Err(e) => {
-                            tracing::warn!(
-                                "skipping unparseable key {:?} for binding {} (macOS override): {}",
-                                key,
-                                binding.id,
-                                e
-                            );
-                            continue;
-                        }
-                    };
-                    let entry = lookup.entry((OsPlatform::Macos, canonical)).or_default();
-                    entry.push(binding.id.clone());
-                }
-            }
-            if let Some(ref windows_keys) = overrides.windows {
-                for key in windows_keys {
-                    let canonical = match KeyStroke::parse(key) {
-                        Ok(stroke) => stroke.display(),
-                        Err(e) => {
-                            tracing::warn!("skipping unparseable key {:?} for binding {} (Windows override): {}", key, binding.id, e);
-                            continue;
-                        }
-                    };
-                    let entry = lookup.entry((OsPlatform::Windows, canonical)).or_default();
-                    entry.push(binding.id.clone());
-                }
-            }
-            if let Some(ref linux_keys) = overrides.linux {
-                for key in linux_keys {
-                    let canonical = match KeyStroke::parse(key) {
-                        Ok(stroke) => stroke.display(),
-                        Err(e) => {
-                            tracing::warn!("skipping unparseable key {:?} for binding {} (Linux override): {}", key, binding.id, e);
-                            continue;
-                        }
-                    };
-                    let entry = lookup.entry((OsPlatform::Linux, canonical)).or_default();
-                    entry.push(binding.id.clone());
-                }
             }
         }
     }
 
-    // Collect conflicts where multiple bindings share the same key
-    for ((platform, _keys), ids) in &lookup {
-        if ids.len() > 1 {
-            // Generate pairwise conflicts
-            for i in 0..ids.len() {
-                for j in (i + 1)..ids.len() {
-                    conflicts.push(Conflict {
-                        binding1: ids[i].clone(),
-                        binding2: ids[j].clone(),
-                        platform: Some(*platform),
-                    });
-                }
+    // Generate pairwise conflicts from lookup
+    for ((_platform, key), binding_ids) in lookup {
+        if binding_ids.len() < 2 {
+            continue;
+        }
+        for i in 0..binding_ids.len() {
+            for j in (i + 1)..binding_ids.len() {
+                conflicts.push(Conflict {
+                    key: key.clone(),
+                    bindings: vec![binding_ids[i].clone(), binding_ids[j].clone()],
+                });
             }
         }
     }

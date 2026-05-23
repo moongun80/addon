@@ -3,7 +3,7 @@
 /// Defines the [`Action`] enum which represents the operation to perform
 /// when a key binding is triggered.
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 
 /// An action to perform when a key binding fires.
 ///
@@ -51,41 +51,43 @@ pub enum Action {
 
 impl Action {
     /// Return a short string identifying the action variant.
-    pub fn variant_name(&self) -> String {
+    pub fn variant_name(&self) -> &'static str {
         match self {
-            Self::Paste { .. } => "paste".to_string(),
-            Self::Launch { .. } => "launch".to_string(),
-            Self::Remap { .. } => "remap".to_string(),
-            Self::Shortcut { .. } => "shortcut".to_string(),
-            Self::SystemCommand { .. } => "system_command".to_string(),
-            Self::TextInsert { .. } => "text_insert".to_string(),
+            Self::Paste { .. } => "paste",
+            Self::Launch { .. } => "launch",
+            Self::Remap { .. } => "remap",
+            Self::Shortcut { .. } => "shortcut",
+            Self::SystemCommand { .. } => "system_command",
+            Self::TextInsert { .. } => "text_insert",
         }
     }
 }
 
-/// Shell metacharacters that could lead to command injection.
-/// These characters allow chaining or redirecting commands when passed
-/// to a shell interpreter.
-const SHELL_METACHARACTERS: &[char] = &[
-    ';', '|', '&', '$', '`', '(', ')', '{', '}', '<', '>', '\\', '"', '\'',
-];
-
-/// Check whether a command string contains dangerous shell metacharacters.
+/// Check whether a single character is safe for use in a system command.
 ///
-/// Returns `true` if the command contains any character that could enable
-/// command injection when executed through a shell.
-pub fn has_shell_metacharacters(command: &str) -> bool {
-    command.chars().any(|c| SHELL_METACHARACTERS.contains(&c))
+/// Uses a strict allowlist: only ASCII alphanumeric characters and a minimal set
+/// of commonly needed punctuation are permitted.
+pub(crate) fn is_safe_cmd_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || [' ', '/', '-', '_', '.', ','].contains(&c)
+}
+
+/// Check whether a command string contains characters not on the safe allowlist.
+///
+/// Returns `true` if the command contains any character that is NOT in the
+/// safe allowlist, indicating potential shell metacharacter injection.
+pub(crate) fn has_shell_metacharacters(s: &str) -> bool {
+    s.chars().any(|c| !is_safe_cmd_char(c))
 }
 
 /// Validate a system command string for safe execution.
 ///
-/// Returns `Ok(())` if the command appears safe (no shell metacharacters),
-/// or `Err(String)` describing the issue.
+/// Returns `Ok(())` if the command passes the strict allowlist check
+/// (only alphanumeric characters and a minimal set of safe punctuation),
+/// or `Err(String)` describing the disallowed characters found.
 ///
-/// **Note:** This is a best-effort defense. For maximum safety, commands
-/// should be executed via `std::process::Command` with explicit argument
-/// splitting rather than through a shell.
+/// Commands containing shell metacharacters (e.g. `;`, `|`, `&`, `$`, `` ` ``,
+/// `(`, `)`, `<`, `>`, `'`, `"`, `\`, `!`, `#`, `*`, `?`, `[`, `]`, `^`,
+/// `~`, `%`, `{`, `}`, `|`, `=`, `:`, `@`, `+`) are rejected.
 pub fn validate_system_command(command: &str) -> Result<(), String> {
     if command.is_empty() {
         return Err("Empty command".to_string());
@@ -93,9 +95,9 @@ pub fn validate_system_command(command: &str) -> Result<(), String> {
     if has_shell_metacharacters(command) {
         let bad_chars: String = command
             .chars()
-            .filter(|c| SHELL_METACHARACTERS.contains(c))
-            .collect::<HashSet<_>>()
-            .into_iter()
+            .filter(|c| !is_safe_cmd_char(*c))
+            .collect::<BTreeSet<_>>()
+            .iter()
             .collect();
         return Err(format!(
             "Command contains potentially unsafe shell metacharacters: {}",

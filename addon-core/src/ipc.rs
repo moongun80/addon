@@ -274,7 +274,7 @@ impl From<crate::config::KeyBinding> for KeyBindingJson {
         Self {
             id: binding.id,
             keys: binding.keys,
-            action_type: binding.action.variant_name(),
+            action_type: binding.action.variant_name().to_string(),
             overrides: binding.overrides.map(|o| PlatformOverridesJson {
                 macos: o.macos,
                 windows: o.windows,

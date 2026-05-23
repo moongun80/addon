@@ -3,7 +3,7 @@
 //! Provides [`Config`] and related types for representing the addon's
 //! configuration file, which maps key bindings to actions per platform.
 
-use crate::actions::Action;
+use crate::actions::{validate_system_command, Action};
 use crate::keymap::KeyStroke;
 use crate::mapper::KeyMapper;
 use crate::os::OsPlatform;
@@ -39,6 +39,7 @@ impl Config {
     /// - Empty key lists
     /// - Unknown action types (checked via serde deserialization already,
     ///   so we focus on runtime structural issues)
+    /// - Invalid system commands (shell metacharacter injection)
     pub fn validate(&self) -> Vec<String> {
         let mut errors = Vec::new();
         let mut seen_ids = std::collections::HashSet::new();
@@ -95,6 +96,16 @@ impl Config {
                             ));
                         }
                     }
+                }
+            }
+
+            // Validate system commands for shell metacharacter injection
+            if let Action::SystemCommand { command } = &binding.action {
+                if let Err(e) = validate_system_command(command) {
+                    errors.push(format!(
+                        "Binding '{}' has invalid system command: {}",
+                        binding.id, e
+                    ));
                 }
             }
         }
