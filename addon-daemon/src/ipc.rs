@@ -546,7 +546,7 @@ fn process_request(req: &IpcRequest, state: &Arc<std::sync::RwLock<DaemonState>>
                 return IpcMessage::response(
                     IpcResponse::Error {
                         code: "UNKNOWN_REQUEST".to_string(),
-                        details: format!("Unknown IPC request type received"),
+                        details: "Unknown IPC request type received".to_string(),
                         request_id: None,
                     }
                     .with_request_id(request_id),
