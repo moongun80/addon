@@ -6,10 +6,12 @@ mod tray;
 use tauri::Manager;
 
 fn main() {
+    let directive: tracing::level_filters::LevelFilter =
+        "info".parse().unwrap_or(tracing::level_filters::LevelFilter::INFO);
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("info".parse().unwrap()),
+                .add_directive(directive),
         )
         .init();
 
@@ -28,5 +30,5 @@ fn main() {
             commands::export_config,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running addon GUI");
+        .inspect_err(|e| eprintln!("addon GUI crashed: {}", e));
 }

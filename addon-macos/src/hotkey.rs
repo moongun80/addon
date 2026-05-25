@@ -161,8 +161,8 @@ impl HotKey {
 impl Drop for HotKey {
     fn drop(&mut self) {
         // Clean up global callback tables
-        KEY_STROKES.lock().unwrap().remove(&self.id);
-        CALLBACKS.lock().unwrap().remove(&self.id);
+        let _ = KEY_STROKES.lock().map(|mut g| g.remove(&self.id));
+        let _ = CALLBACKS.lock().map(|mut g| g.remove(&self.id));
 
         if !self.ref_.is_null() {
             unsafe { UnregisterEventHotKey(self.ref_) };
@@ -189,8 +189,16 @@ fn register_callback(
     key_stroke: KeyStroke,
     callback: Box<dyn Fn(&KeyStroke) + Send>,
 ) {
-    KEY_STROKES.lock().unwrap().insert(id, key_stroke);
-    CALLBACKS.lock().unwrap().insert(id, callback);
+    if let Ok(mut guard) = KEY_STROKES.lock() {
+        guard.insert(id, key_stroke);
+    } else {
+        tracing::error!("KEY_STROKES mutex poisoned — cannot register hotkey");
+    }
+    if let Ok(mut guard) = CALLBACKS.lock() {
+        guard.insert(id, callback);
+    } else {
+        tracing::error!("CALLBACKS mutex poisoned — cannot register callback");
+    }
 }
 
 /// The C-function entry point called by Carbon when a hotkey fires.
@@ -206,8 +214,24 @@ extern "C" fn event_handler(event: *mut c_void, _userData: *mut c_void) {
 
     let id = uint_to_hot_key_id(val);
 
-    if let Some(stroke) = KEY_STROKES.lock().unwrap().get(&id).cloned() {
-        if let Some(callback) = CALLBACKS.lock().unwrap().get(&id) {
+    let stroke = {
+        let guard = match KEY_STROKES.lock() {
+            Ok(g) => g,
+            Err(_) => return, // mutex poisoned, bail
+        };
+        guard.get(&id).cloned()
+    };
+
+    if let Some(stroke) = stroke {
+        let callback = {
+            let guard = match CALLBACKS.lock() {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            guard.get(&id)
+        };
+
+        if let Some(callback) = callback {
             callback(&stroke);
         }
     }

@@ -253,7 +253,7 @@ pub fn load(path: &Path) -> crate::error::Result<Config> {
         crate::error::Error::Parse(format!("failed to read config file {:?}: {}", path, e))
     })?;
 
-    let mut config: Config = serde_yaml::from_str(&contents).map_err(|e| {
+    let config: Config = serde_yaml::from_str(&contents).map_err(|e| {
         crate::error::Error::Parse(format!("failed to parse config file {:?}: {}", path, e))
     })?;
 

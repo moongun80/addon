@@ -152,10 +152,11 @@ unsafe impl Sync for XDisplayHandle {}
 
 impl XDisplayHandle {
     /// Create from a raw non-null display pointer.
-    pub fn new(dpy: XDisplay) -> Self {
-        Self {
-            inner: NonNull::new(dpy).expect("X11 display pointer must be non-null"),
-        }
+    pub fn new(dpy: XDisplay) -> Result<Self, Error> {
+        NonNull::new(dpy).map(|inner| Self { inner })
+            .ok_or_else(|| Error::AdapterNotAvailable(
+                "X11 display pointer is null".to_string()
+            ))
     }
 
     /// Borrow the raw pointer.
@@ -210,7 +211,7 @@ impl LinuxX11Adapter {
         }
 
         tracing::info!("Opened X11 display");
-        self.display = Some(XDisplayHandle::new(dpy));
+        self.display = Some(XDisplayHandle::new(dpy)?);
         Ok(())
     }
 
