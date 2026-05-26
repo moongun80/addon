@@ -19,6 +19,10 @@ cfg-if = "1"
 thiserror.workspace = true
 anyhow.workspace = true
 dirs.workspace = true
+rand = { workspace = true }
+hex = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
 
 # macOS and Windows adapters are excluded from the workspace on Linux.
 # To build on those platforms, add the respective crates to workspace members

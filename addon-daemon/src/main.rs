@@ -76,6 +76,25 @@ async fn main() -> Result<()> {
     // ------------------------------------------------------------------
     let state = daemon::create_daemon_state(config, adapter);
 
+    // IMP-001: Persist the auth secret to a token file so it survives daemon restarts
+    {
+        let guard = state.read().expect("daemon state lock");
+        let secret = &guard.auth_secret;
+        let token_path = ipc::get_socket_path().parent()
+            .map(|p| p.join(".daemon_token"))
+            .expect("socket path has a parent");
+        
+        if let Some(dir) = token_path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(mut f) = std::fs::File::create(&token_path) {
+            use std::io::Write;
+            let _ = f.write_all(secret.as_bytes());
+            let _ = std::fs::set_permissions(&token_path, std::os::unix::fs::PermissionsExt::from_mode(0o600));
+        }
+        info!("Auth secret persisted to: {:?}", token_path);
+    }
+
     // ------------------------------------------------------------------
     // 6. Start IPC server.
     // ------------------------------------------------------------------
@@ -187,7 +206,7 @@ pub fn get_config_path() -> Result<PathBuf> {
 /// - `--features linux`  → Linux X11 adapter
 /// - `--features macos`  → macOS Carbon adapter
 /// - `--features windows` → Windows hook adapter
-fn create_adapter(config: addon_core::config::Config) -> Result<Box<dyn addon_core::OsAdapter>> {
+fn create_adapter(_config: addon_core::config::Config) -> Result<Box<dyn addon_core::OsAdapter>> {
     #[cfg(feature = "linux")]
     {
         Ok(Box::new(addon_linux::LinuxX11Adapter::new(config)))

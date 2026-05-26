@@ -10,6 +10,44 @@
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
+// Authentication types — IMP-001
+// ---------------------------------------------------------------------------
+
+/// Authentication challenge sent by the daemon to the client.
+/// The client must sign the nonce within ±30 seconds to prove identity.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthChallenge {
+    /// 32-byte hex-encoded random nonce (replay attack prevention)
+    pub nonce: String,
+    /// Daemon PID at startup (replay attack prevention)
+    pub daemon_pid: u32,
+    /// Unix timestamp in seconds when the challenge was issued
+    pub timestamp: u64,
+}
+
+/// Authentication token sent by the client in response to a challenge.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthToken {
+    /// Client PID
+    pub client_pid: u32,
+    /// Echo of the challenge nonce
+    pub nonce: String,
+    /// Echo of the challenge timestamp (for replay protection)
+    pub timestamp: u64,
+    /// HMAC-SHA256(secret, nonce + daemon_pid.to_le_bytes()) as hex string
+    pub signature: String,
+}
+
+/// Authentication result returned by the daemon.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthResult {
+    /// Whether authentication succeeded
+    pub accepted: bool,
+    /// Optional rejection reason: "expired", "invalid_signature", "unknown"
+    pub reason: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
 // Message types — Client → Daemon
 // ---------------------------------------------------------------------------
 
@@ -28,6 +66,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum IpcRequest {
+    /// Authentication — must be the first message sent after connecting
+    Auth {
+        token: AuthToken,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
+    },
+
     /// Update daemon configuration.
     SetConfig {
         config: serde_json::Value,
@@ -72,7 +117,8 @@ impl IpcRequest {
     /// Extract the optional request correlation ID.
     pub fn request_id(&self) -> Option<&str> {
         match self {
-            Self::SetConfig { request_id, .. }
+            Self::Auth { request_id, .. }
+            | Self::SetConfig { request_id, .. }
             | Self::ReloadConfig { request_id }
             | Self::TestShortcut { request_id, .. }
             | Self::GetStatus { request_id }
@@ -94,6 +140,21 @@ impl IpcRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum IpcResponse {
+    /// Authentication challenge — sent by daemon when client connects
+    AuthChallenge {
+        challenge: AuthChallenge,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
+    },
+
+    /// Authentication result — sent by daemon after client sends Auth token
+    AuthResult {
+        accepted: bool,
+        reason: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
+    },
+
     /// Current daemon status.
     DaemonStatus {
         running: bool,
@@ -143,6 +204,19 @@ impl IpcResponse {
     pub fn with_request_id(self, request_id: impl Into<Option<String>>) -> Self {
         let rid = request_id.into();
         match self {
+            Self::AuthChallenge { challenge, .. } => Self::AuthChallenge {
+                challenge,
+                request_id: rid,
+            },
+            Self::AuthResult {
+                accepted,
+                reason,
+                ..
+            } => Self::AuthResult {
+                accepted,
+                reason,
+                request_id: rid,
+            },
             Self::DaemonStatus {
                 running,
                 pid,

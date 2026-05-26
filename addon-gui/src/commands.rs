@@ -3,11 +3,17 @@
 //! All IPC commands communicate with the daemon via Unix domain sockets
 //! using a newline-delimited JSON protocol. Commands are async because
 //! socket I/O must not block the Tauri runtime.
+//!
+//! IMP-001: All connections authenticate via HMAC-SHA256 challenge-response
+//! before sending any requests.
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
+use tokio::sync::Mutex;
 
-use addon_core::ipc::{IpcMessage, IpcRequest, IpcResponse, KeyBindingJson};
+use addon_core::ipc::{IpcMessage, IpcRequest, IpcResponse, KeyBindingJson, AuthChallenge, AuthToken};
+
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Returns the platform-specific socket path.
 fn get_socket_path() -> std::path::PathBuf {
@@ -16,12 +22,147 @@ fn get_socket_path() -> std::path::PathBuf {
     dir.join("daemon.sock")
 }
 
+/// Returns the path to the daemon auth token file.
+fn get_token_path() -> std::path::PathBuf {
+    get_socket_path().parent()
+        .map(|p| p.join(".daemon_token"))
+        .expect("socket path has a parent")
+}
+
+/// Load the shared secret from the token file.
+fn load_secret() -> Option<String> {
+    std::fs::read_to_string(get_token_path()).ok()
+}
+
+/// Global mutex to serialize authentication (only one auth handshake at a time).
+static AUTH_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Authenticate with the daemon using HMAC-SHA256 challenge-response.
+/// IMP-001: This must be called before any IPC request.
+async fn authenticate() -> Result<(), anyhow::Error> {
+    // Serialize auth handshakes — only one at a time
+    let _lock = AUTH_MUTEX.lock().unwrap();
+    
+    let secret = load_secret().ok_or_else(|| anyhow::anyhow!("Auth token file not found"))?;
+    
+    // Connect to daemon
+    let socket = get_socket_path();
+    let mut stream = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        UnixStream::connect(&socket),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("Daemon not responding (connection timeout)"))??;
+    
+    // Send auth request
+    let auth_req = IpcMessage::request(IpcRequest::Auth {
+        token: AuthToken {
+            client_pid: std::process::id(),
+            nonce: String::new(), // Will be filled after challenge
+            signature: String::new(),
+        },
+        request_id: None,
+    });
+    
+    let json = serde_json::to_string(&auth_req)?;
+    stream.write_all(json.as_bytes()).await?;
+    stream.write_all(b"\n").await?;
+    stream.flush().await?;
+    
+    // Read challenge response
+    let mut buf_reader = BufReader::new(stream);
+    let mut line = String::new();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        buf_reader.read_line(&mut line),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("Auth challenge read timeout"))?
+    .map_err(|e| anyhow::anyhow!("Read error: {}", e))?;
+    
+    let msg: IpcMessage = serde_json::from_str(line.trim())?;
+    
+    // Extract challenge
+    let (nonce, daemon_pid, timestamp) = match &msg {
+        IpcMessage::Response(IpcResponse::AuthChallenge { challenge, .. }) => (
+            challenge.nonce.clone(),
+            challenge.daemon_pid,
+            challenge.timestamp,
+        ),
+        _ => return Err(anyhow::anyhow!("Expected AuthChallenge response")),
+    };
+    
+    // Verify timestamp (±30 seconds)
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| anyhow::anyhow!("Time error: {}", e))?
+        .as_secs();
+    
+    if (now as i64 - timestamp as i64).abs() > 30 {
+        return Err(anyhow::anyhow!("Auth challenge expired"));
+    }
+    
+    // Compute HMAC-SHA256 signature
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    type HmacSha256 = Hmac<Sha256>;
+    
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+        .map_err(|e| anyhow::anyhow!("HMAC init failed: {}", e))?;
+    mac.update(nonce.as_bytes());
+    mac.update(daemon_pid.to_le_bytes());
+    let signature = hex::encode(mac.finalize().into_bytes());
+    
+    // Send auth token
+    let auth_token = AuthToken {
+        client_pid: std::process::id(),
+        nonce,
+        signature,
+    };
+    
+    let auth_msg = IpcMessage::request(IpcRequest::Auth {
+        token: auth_token,
+        request_id: None,
+    });
+    
+    let json = serde_json::to_string(&auth_msg)?;
+    stream.write_all(json.as_bytes()).await?;
+    stream.write_all(b"\n").await?;
+    stream.flush().await?;
+    
+    // Read auth result
+    let mut line = String::new();
+    buf_reader = BufReader::new(stream);
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        buf_reader.read_line(&mut line),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("Auth result read timeout"))?
+    .map_err(|e| anyhow::anyhow!("Read error: {}", e))?;
+    
+    let result: IpcMessage = serde_json::from_str(line.trim())?;
+    
+    match &result {
+        IpcMessage::Response(IpcResponse::AuthResult { accepted, reason, .. }) => {
+            if *accepted {
+                tracing::info!("GUI authenticated with daemon");
+                Ok(())
+            } else {
+                Err(anyhow::anyhow!("Auth rejected: {:?}", reason))
+            }
+        }
+        _ => Err(anyhow::anyhow!("Expected AuthResult response")),
+    }
+}
+
 /// Send a message over a Unix domain socket and await the response.
 ///
-/// Uses the same newline-delimited JSON protocol as the daemon's IPC server.
-/// FIX-024: Wrapped with a 5-second connection timeout so the GUI doesn't
-/// hang forever if the daemon is dead.
+/// IMP-001: Authenticates with the daemon first, then sends the request.
 async fn send_async(msg: &IpcMessage) -> Result<IpcMessage, anyhow::Error> {
+    // IMP-001: Authenticate first
+    authenticate().await?;
+    
     let socket = get_socket_path();
     let mut stream = tokio::time::timeout(
         std::time::Duration::from_secs(5),
@@ -36,10 +177,8 @@ async fn send_async(msg: &IpcMessage) -> Result<IpcMessage, anyhow::Error> {
     stream.flush().await?;
 
     // Read the newline-delimited response.
-    // FIX-015: Use stream directly instead of cloning — avoids wasting a file descriptor.
     let mut buf_reader = BufReader::new(stream);
     let mut line = String::new();
-    // FIX-005: Apply a 5-second read timeout so hung daemons don't stall the GUI.
     tokio::time::timeout(std::time::Duration::from_secs(5), buf_reader.read_line(&mut line))
         .await
         .map_err(|_| anyhow::anyhow!("Daemon read timeout (no response within 5s)"))?

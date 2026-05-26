@@ -19,6 +19,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["full"] }
 addon-core = { path = "../addon-core" }
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
 
 [workspace]
 members = ["."]

@@ -3,6 +3,9 @@
 //! The daemon listens on a Unix socket for JSON messages from the
 //! Tauri GUI client. Each message is newline-delimited (`\n`),
 //! following the same protocol used by the GUI client.
+//!
+//! IMP-001: All client connections must authenticate via HMAC-SHA256
+//! challenge-response before any requests are processed.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -12,7 +15,52 @@ use tokio::net::{UnixListener, UnixStream};
 
 use crate::daemon::DaemonState;
 use crate::get_config_path;
-use addon_core::ipc::{IpcMessage, IpcRequest, IpcResponse};
+use addon_core::ipc::{IpcMessage, IpcRequest, IpcResponse, AuthChallenge, AuthToken};
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+
+type HmacSha256 = Hmac<Sha256>;
+
+// ---------------------------------------------------------------------------
+// Authentication helpers — IMP-001
+// ---------------------------------------------------------------------------
+
+/// Generate a cryptographically random 32-byte hex nonce.
+fn generate_nonce() -> String {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let bytes: [u8; 32] = rng.gen();
+    hex::encode(bytes)
+}
+
+/// Compute HMAC-SHA256(secret, nonce + daemon_pid_bytes)
+fn compute_hmac(secret: &str, nonce: &str, daemon_pid: u32) -> String {
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+        .expect("HMAC can take key of any size");
+    mac.update(nonce.as_bytes());
+    mac.update(&daemon_pid.to_le_bytes());
+    hex::encode(mac.finalize().into_bytes())
+}
+
+/// Verify the client's auth token against the shared secret.
+fn verify_auth_token(secret: &str, token: &AuthToken, daemon_pid: u32, timestamp: u64) -> Result<(), &'static str> {
+    let expected_sig = compute_hmac(secret, &token.nonce, daemon_pid);
+    if expected_sig != token.signature {
+        return Err("invalid_signature");
+    }
+    
+    // Verify timestamp (±30 seconds)
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "time_error")?
+        .as_secs();
+    
+    if (now as i64 - timestamp as i64).abs() > 30 {
+        return Err("expired");
+    }
+    
+    Ok(())
+}
 
 // ---------------------------------------------------------------------------
 // Socket path
@@ -97,6 +145,9 @@ impl IpcServer {
 
 /// Process messages from a single GUI client connection.
 ///
+/// IMP-001: The first message MUST be an authentication request.
+/// The daemon sends an `AuthChallenge` if the client hasn't authenticated yet.
+///
 /// The protocol is newline-delimited JSON: each message ends with `\n`.
 /// We use a `BufReader` with `read_line` to handle partial reads correctly.
 async fn handle_client(
@@ -109,6 +160,9 @@ async fn handle_client(
     // FIX-020: Track consecutive parse failures to prevent DoS from malformed input.
     let mut consecutive_parse_failures: u32 = 0;
     const MAX_PARSE_FAILURES: u32 = 10;
+
+    // IMP-001: Track authentication state per connection
+    let mut authenticated = false;
 
     loop {
         let mut line = String::new();
@@ -156,6 +210,94 @@ async fn handle_client(
             }
         };
 
+        // IMP-001: Authentication gate
+        if !authenticated {
+            match &msg {
+                IpcMessage::Request(IpcRequest::Auth { token, .. }) => {
+                    // Verify the auth token
+                    let (secret, daemon_pid) = {
+                        let state_guard = daemon_state.read().map_err(|e| {
+                            std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+                        })?;
+                        (state_guard.auth_secret.clone(), std::process::id())
+                    };
+
+                    let auth_resp = match verify_auth_token(&secret, token, daemon_pid, token.timestamp) {
+                        Ok(()) => {
+                            tracing::info!("Client authenticated successfully (PID {})", token.client_pid);
+                            IpcMessage::response(IpcResponse::AuthResult {
+                                accepted: true,
+                                reason: None,
+                                request_id: None,
+                            })
+                        }
+                        Err(reason) => {
+                            tracing::warn!("Authentication failed: {}", reason);
+                            IpcMessage::response(IpcResponse::AuthResult {
+                                accepted: false,
+                                reason: Some(reason.to_string()),
+                                request_id: None,
+                            })
+                        }
+                    };
+                    
+                    let json = serde_json::to_string(&auth_resp)?;
+                    writer.write_all(json.as_bytes()).await?;
+                    writer.write_all(b"\n").await?;
+                    writer.flush().await?;
+
+                    if auth_resp.is_response() {
+                        if let IpcMessage::Response(IpcResponse::AuthResult { accepted, .. }) = &auth_resp {
+                            if *accepted {
+                                authenticated = true;
+                            } else {
+                                tracing::warn!("Client rejected after auth failure, closing connection");
+                                break;
+                            }
+                        }
+                    }
+                    continue;
+                }
+                IpcMessage::Request(_) => {
+                    // Client tried to send a non-auth request without authenticating
+                    // Send an AuthChallenge to prompt authentication
+                    let (_secret, daemon_pid) = {
+                        let state_guard = daemon_state.read().map_err(|e| {
+                            std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+                        })?;
+                        (state_guard.auth_secret.clone(), std::process::id())
+                    };
+
+                    let nonce = generate_nonce();
+                    let timestamp = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?
+                        .as_secs();
+
+                    let challenge = AuthChallenge {
+                        nonce,
+                        daemon_pid,
+                        timestamp,
+                    };
+                    let challenge_resp = IpcMessage::response(IpcResponse::AuthChallenge {
+                        challenge,
+                        request_id: None,
+                    });
+
+                    let json = serde_json::to_string(&challenge_resp)?;
+                    writer.write_all(json.as_bytes()).await?;
+                    writer.write_all(b"\n").await?;
+                    writer.flush().await?;
+                    continue;
+                }
+                IpcMessage::Response(_) => {
+                    tracing::warn!("Unexpected response from client, ignoring");
+                    continue;
+                }
+            }
+        }
+
+        // IMP-001: Client is authenticated — process the request
         let resp = match &msg {
             IpcMessage::Request(req) => process_request(req, &daemon_state),
             IpcMessage::Response(_) => {
