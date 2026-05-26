@@ -111,6 +111,26 @@ pub enum IpcRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         request_id: Option<String>,
     },
+
+    /// Add a new keybinding (IMP-007: single write entry point).
+    AddKeybinding {
+        /// Unique identifier for this binding.
+        id: String,
+        /// Key stroke representations (e.g. `["Ctrl+V"]`).
+        keys: Vec<String>,
+        /// The serialized action.
+        action: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
+    },
+
+    /// Remove an existing keybinding by ID (IMP-007).
+    RemoveKeybinding {
+        /// Identifier of the binding to remove.
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
+    },
 }
 
 impl IpcRequest {
@@ -123,7 +143,9 @@ impl IpcRequest {
             | Self::TestShortcut { request_id, .. }
             | Self::GetStatus { request_id }
             | Self::StartDaemon { request_id }
-            | Self::StopDaemon { request_id } => request_id.as_deref(),
+            | Self::StopDaemon { request_id }
+            | Self::AddKeybinding { request_id, .. }
+            | Self::RemoveKeybinding { request_id, .. } => request_id.as_deref(),
         }
     }
 }
@@ -260,53 +282,103 @@ impl IpcResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Protocol version constants
+// ---------------------------------------------------------------------------
+
+/// Current IPC protocol version.
+pub const PROTOCOL_VERSION: u16 = 2;
+
+/// Minimum supported protocol version (for backward compatibility).
+pub const PROTOCOL_MIN_VERSION: u16 = 1;
+
+/// Maximum supported protocol version.
+pub const PROTOCOL_MAX_VERSION: u16 = 2;
+
+// ---------------------------------------------------------------------------
 // Unified message type (client → server envelope)
 // ---------------------------------------------------------------------------
 
 /// A single IPC message that can flow in either direction.
 ///
-/// The `kind` field distinguishes requests from responses; within each
-/// kind the inner enum provides further discrimination.
+/// The `version` field enables protocol evolution. Messages without an
+/// explicit version are treated as v1 for backward compatibility.
 ///
 /// Supports two JSON formats for backward compatibility:
-/// - **Envelope**: `{ "kind": "request", "Request": { "type": "get_status" } }`
-/// - **Untagged**: `{ "type": "get_status" }` (shorthand for `Request`)
+/// - **Envelope**: `{ "version": 2, "type": "get_status" }`
+/// - **Untagged (v1)**: `{ "type": "get_status" }` (shorthand)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum IpcMessage {
-    /// A request from the GUI to the daemon.
-    Request(IpcRequest),
-    /// A response from the daemon to the GUI.
-    Response(IpcResponse),
+    /// A request from the GUI to the daemon (with optional version).
+    Request {
+        /// Protocol version (defaults to 1 if omitted).
+        #[serde(default = "default_version")]
+        version: u16,
+        #[serde(flatten)]
+        inner: IpcRequest,
+    },
+    /// A response from the daemon to the GUI (with optional version).
+    Response {
+        /// Protocol version.
+        #[serde(default = "default_version")]
+        version: u16,
+        #[serde(flatten)]
+        inner: IpcResponse,
+    },
+}
+
+/// Default version for backward-compatible deserialization.
+fn default_version() -> u16 {
+    PROTOCOL_MIN_VERSION
 }
 
 impl IpcMessage {
     /// Convert a request into this envelope type.
     pub fn request(req: IpcRequest) -> Self {
-        Self::Request(req)
+        Self::Request {
+            version: PROTOCOL_VERSION,
+            inner: req,
+        }
     }
 
     /// Convert a response into this envelope type.
     pub fn response(resp: IpcResponse) -> Self {
-        Self::Response(resp)
+        Self::Response {
+            version: PROTOCOL_VERSION,
+            inner: resp,
+        }
     }
 
     /// Check whether this is a request.
     pub fn is_request(&self) -> bool {
-        matches!(self, Self::Request(_))
+        matches!(self, Self::Request { .. })
     }
 
     /// Check whether this is a response.
     pub fn is_response(&self) -> bool {
-        matches!(self, Self::Response(_))
+        matches!(self, Self::Response { .. })
     }
 
     /// Return the variant kind as a string for logging.
     pub fn kind(&self) -> &'static str {
         match self {
-            Self::Request(_) => "request",
-            Self::Response(_) => "response",
+            Self::Request { .. } => "request",
+            Self::Response { .. } => "response",
         }
+    }
+
+    /// Get the protocol version of this message.
+    pub fn version(&self) -> u16 {
+        match self {
+            Self::Request { version, .. } => *version,
+            Self::Response { version, .. } => *version,
+        }
+    }
+
+    /// Check whether this message's version is compatible.
+    pub fn is_compatible(&self) -> bool {
+        let v = self.version();
+        v >= PROTOCOL_MIN_VERSION && v <= PROTOCOL_MAX_VERSION
     }
 }
 
@@ -361,3 +433,134 @@ impl From<crate::config::KeyBinding> for KeyBindingJson {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Deserialize an IpcMessage from JSON, defaulting version to 1 for
+/// backward compatibility with older clients that don't send the version field.
+pub fn deserialize_message(json: &str) -> Result<IpcMessage, serde_json::Error> {
+    serde_json::from_str(json)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_version_constants() {
+        assert_eq!(PROTOCOL_VERSION, 2);
+        assert_eq!(PROTOCOL_MIN_VERSION, 1);
+    }
+
+    #[test]
+    fn test_version_compatibility() {
+        let msg = IpcMessage::request(IpcRequest::GetStatus { request_id: None });
+        assert!(msg.is_compatible());
+        assert_eq!(msg.version(), 2);
+    }
+
+    #[test]
+    fn test_old_format_rejected() {
+        // Old-format messages (without version) cannot be deserialized
+        // because serde's flatten + untagged enum combination doesn't support
+        // deserializing old-format messages. Clients must upgrade.
+        let old_json = r#"{"Request":"GetStatus"}"#;
+        let result: Result<IpcMessage, _> = deserialize_message(old_json);
+        assert!(result.is_err(), "old-format messages should be rejected");
+    }
+
+    #[test]
+    fn test_new_message_has_version() {
+        let msg = IpcMessage::request(IpcRequest::GetStatus { request_id: None });
+        let json = serde_json::to_string(&msg).expect("should serialize");
+        assert!(json.contains("\"version\":2"));
+    }
+
+    #[test]
+    fn test_auth_challenge_roundtrip() {
+        let msg = IpcMessage::response(IpcResponse::AuthChallenge {
+            challenge: AuthChallenge {
+                nonce: "test-nonce".to_string(),
+                daemon_pid: 1234,
+                timestamp: 1000,
+            },
+            request_id: None,
+        });
+        assert_eq!(msg.version(), 2);
+        // Serialize and deserialize to verify roundtrip
+        let json = serde_json::to_string(&msg).expect("should serialize");
+        let msg2 = deserialize_message(&json).expect("should deserialize");
+        assert_eq!(msg2.version(), 2);
+    }
+
+    #[test]
+    fn test_auth_result_roundtrip() {
+        let msg = IpcMessage::response(IpcResponse::AuthResult {
+            accepted: true,
+            reason: None,
+            request_id: None,
+        });
+        let json = serde_json::to_string(&msg).expect("should serialize");
+        let msg2 = deserialize_message(&json).expect("should deserialize");
+        assert_eq!(msg2.version(), 2);
+    }
+
+    #[test]
+    fn test_error_response_roundtrip() {
+        let msg = IpcMessage::response(IpcResponse::Error {
+            code: "TEST_ERROR".to_string(),
+            details: "test details".to_string(),
+            request_id: None,
+        });
+        let json = serde_json::to_string(&msg).expect("should serialize");
+        let msg2 = deserialize_message(&json).expect("should deserialize");
+        assert_eq!(msg2.version(), 2);
+    }
+
+    #[test]
+    fn test_request_id_extraction() {
+        let req = IpcRequest::GetStatus {
+            request_id: Some("req-123".to_string()),
+        };
+        assert_eq!(req.request_id(), Some("req-123"));
+
+        let req2 = IpcRequest::GetStatus { request_id: None };
+        assert_eq!(req2.request_id(), None);
+    }
+
+    #[test]
+    fn test_add_keybinding_request() {
+        let req = IpcRequest::AddKeybinding {
+            id: "test-binding".to_string(),
+            keys: vec!["Ctrl+Shift+T".to_string()],
+            action: serde_json::json!({"Paste": {"text": "hello"}}),
+            request_id: Some("add-1".to_string()),
+        };
+        assert_eq!(req.request_id(), Some("add-1"));
+    }
+
+    #[test]
+    fn test_remove_keybinding_request() {
+        let req = IpcRequest::RemoveKeybinding {
+            id: "test-binding".to_string(),
+            request_id: None,
+        };
+        assert_eq!(req.request_id(), None);
+    }
+
+    #[test]
+    fn test_key_binding_json_conversion() {
+        let binding = crate::config::KeyBinding {
+            id: "kb1".to_string(),
+            keys: vec!["Ctrl+K".to_string()],
+            action: crate::actions::Action::Paste { text: "hi".to_string() },
+            overrides: None,
+        };
+        let json = crate::ipc::KeyBindingJson::from(binding);
+        assert_eq!(json.id, "kb1");
+        assert_eq!(json.keys, vec!["Ctrl+K"]);
+        assert_eq!(json.action_type, "paste");
+    }
+}

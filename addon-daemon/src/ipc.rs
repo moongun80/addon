@@ -210,10 +210,29 @@ async fn handle_client(
             }
         };
 
+        // IMP-005: Protocol version check
+        if !msg.is_compatible() {
+            let err_resp = IpcMessage::response(IpcResponse::Error {
+                code: "PROTOCOL_VERSION_MISMATCH".to_string(),
+                details: format!(
+                    "Incoming version {} not in supported range [{}, {}]",
+                    msg.version(),
+                    addon_core::ipc::PROTOCOL_MIN_VERSION,
+                    addon_core::ipc::PROTOCOL_MAX_VERSION,
+                ),
+                request_id: None,
+            });
+            let json = serde_json::to_string(&err_resp)?;
+            let _ = writer.write_all(json.as_bytes()).await;
+            let _ = writer.write_all(b"\n").await;
+            let _ = writer.flush().await;
+            continue;
+        }
+
         // IMP-001: Authentication gate
         if !authenticated {
             match &msg {
-                IpcMessage::Request(IpcRequest::Auth { token, .. }) => {
+                IpcMessage::Request { inner: IpcRequest::Auth { token, .. }, .. } => {
                     // Verify the auth token
                     let (secret, daemon_pid) = {
                         let state_guard = daemon_state.read().map_err(|e| {
@@ -247,7 +266,7 @@ async fn handle_client(
                     writer.flush().await?;
 
                     if auth_resp.is_response() {
-                        if let IpcMessage::Response(IpcResponse::AuthResult { accepted, .. }) = &auth_resp {
+                        if let IpcMessage::Response { inner: IpcResponse::AuthResult { accepted, .. }, .. } = &auth_resp {
                             if *accepted {
                                 authenticated = true;
                             } else {
@@ -258,7 +277,7 @@ async fn handle_client(
                     }
                     continue;
                 }
-                IpcMessage::Request(_) => {
+                IpcMessage::Request { .. } => {
                     // Client tried to send a non-auth request without authenticating
                     // Send an AuthChallenge to prompt authentication
                     let (_secret, daemon_pid) = {
@@ -290,7 +309,7 @@ async fn handle_client(
                     writer.flush().await?;
                     continue;
                 }
-                IpcMessage::Response(_) => {
+                IpcMessage::Response { .. } => {
                     tracing::warn!("Unexpected response from client, ignoring");
                     continue;
                 }
@@ -299,8 +318,8 @@ async fn handle_client(
 
         // IMP-001: Client is authenticated — process the request
         let resp = match &msg {
-            IpcMessage::Request(req) => process_request(req, &daemon_state),
-            IpcMessage::Response(_) => {
+            IpcMessage::Request { inner: req, .. } => process_request(req, &daemon_state),
+            IpcMessage::Response { .. } => {
                 tracing::warn!("Unexpected response from client, ignoring");
                 continue;
             }
@@ -321,6 +340,40 @@ async fn handle_client(
 fn process_request(req: &IpcRequest, state: &Arc<std::sync::RwLock<DaemonState>>) -> IpcMessage {
     let request_id = req.request_id().map(str::to_string);
 
+    // IMP-009-A: Shared adapter reinit logic extracted below
+    fn reinit_adapter(state: &Arc<std::sync::RwLock<DaemonState>>, cfg: &addon_core::config::Config) -> bool {
+        let adapter = {
+            let mut g = match state.write() {
+                Ok(g) => g,
+                Err(e) => e.into_inner(),
+            };
+            g.adapter.take()
+        };
+
+        let result = if let Some(mut adapter) = adapter {
+            adapter.set_config(cfg);
+            let stop_ok = adapter.stop().is_ok();
+            let init_ok = if stop_ok { adapter.init().is_ok() } else { false };
+            let start_ok = if init_ok { adapter.start().is_ok() } else { true };
+            if !stop_ok { tracing::warn!("Adapter stop during reinit"); }
+            else if !init_ok { tracing::warn!("Adapter reinit during reinit"); }
+            else if !start_ok { tracing::warn!("Adapter start during reinit"); }
+            {
+                let mut g = match state.write() {
+                    Ok(g) => g,
+                    Err(e) => e.into_inner(),
+                };
+                g.adapter = Some(adapter);
+                g.initialized = stop_ok && init_ok && start_ok;
+            }
+            stop_ok && init_ok && start_ok
+        } else {
+            true
+        };
+
+        result
+    }
+
     // TestShortcut needs no lock at all — pure parsing
     if let IpcRequest::TestShortcut {
         keys, action: _, ..
@@ -328,7 +381,6 @@ fn process_request(req: &IpcRequest, state: &Arc<std::sync::RwLock<DaemonState>>
     {
         let mut all_ok = true;
         let mut messages: Vec<String> = Vec::new();
-
         for key_str in keys {
             match addon_core::keymap::KeyStroke::parse(key_str) {
                 Ok(stroke) => {
@@ -535,44 +587,12 @@ fn process_request(req: &IpcRequest, state: &Arc<std::sync::RwLock<DaemonState>>
                     .map(addon_core::ipc::KeyBindingJson::from)
                     .collect();
 
-                // Extract adapter and config for lifecycle outside the lock
-                let adapter_for_reinit = if old_running {
-                    guard.adapter.take()
-                } else {
-                    None
-                };
                 let new_cfg = guard.config.clone();
                 drop(guard);
 
-                // Adapter lifecycle OUTSIDE the lock
+                // IMP-009-A: Reinitialize adapter using shared helper
                 if old_running {
-                    if let Some(mut adapter) = adapter_for_reinit {
-                        adapter.set_config(&new_cfg);
-                        let stop_ok = adapter.stop().is_ok();
-                        let init_ok_val = if stop_ok {
-                            adapter.init().is_ok()
-                        } else {
-                            false
-                        };
-                        let start_ok = if init_ok_val {
-                            adapter.start().is_ok()
-                        } else {
-                            true
-                        };
-                        if !stop_ok {
-                            tracing::warn!("Adapter stop during SetConfig");
-                        } else if !init_ok_val {
-                            tracing::warn!("Adapter reinit during SetConfig");
-                        } else if !start_ok {
-                            tracing::warn!("Adapter start during SetConfig");
-                        }
-                        // Put adapter back under a fresh lock
-                        {
-                            let mut g = state.write().unwrap_or_else(|e| e.into_inner());
-                            g.adapter = Some(adapter);
-                            g.initialized = init_ok_val && start_ok;
-                        }
-                    }
+                    reinit_adapter(state, &new_cfg);
                 }
 
                 return IpcMessage::response(
@@ -629,11 +649,8 @@ fn process_request(req: &IpcRequest, state: &Arc<std::sync::RwLock<DaemonState>>
                     }
                 }
 
-                // Update state and reinitialize adapter.
+                // Update state and collect keys for response.
                 guard.config = new_config.clone();
-                let cfg_for_adapter = guard.config.clone();
-                let adapter_for_reinit = guard.adapter.take();
-
                 let keys: Vec<addon_core::ipc::KeyBindingJson> = guard
                     .config
                     .keybindings
@@ -644,37 +661,188 @@ fn process_request(req: &IpcRequest, state: &Arc<std::sync::RwLock<DaemonState>>
 
                 drop(guard);
 
-                // Adapter lifecycle OUTSIDE the lock
-                if let Some(mut adapter) = adapter_for_reinit {
-                    adapter.set_config(&cfg_for_adapter);
-                    let stop_ok = adapter.stop().is_ok();
-                    let init_ok_val = if stop_ok {
-                        adapter.init().is_ok()
-                    } else {
-                        false
-                    };
-                    let start_ok = if init_ok_val {
-                        adapter.start().is_ok()
-                    } else {
-                        true
-                    };
-                    if !stop_ok {
-                        tracing::warn!("Adapter stop during ReloadConfig");
-                    } else if !init_ok_val {
-                        tracing::warn!("Adapter reinit during ReloadConfig");
-                    } else if !start_ok {
-                        tracing::warn!("Adapter start during ReloadConfig");
-                    }
-                    {
-                        let mut g = state.write().unwrap_or_else(|e| e.into_inner());
-                        g.adapter = Some(adapter);
-                        g.initialized = stop_ok && init_ok_val && start_ok;
-                    }
-                }
+                // IMP-009-A: Reinitialize adapter using shared helper
+                reinit_adapter(state, &new_config);
 
                 return IpcMessage::response(
                     IpcResponse::ConfigLoaded {
                         keys,
+                        request_id: None,
+                    }
+                    .with_request_id(request_id),
+                );
+            }
+
+            // IMP-007: Add a keybinding through the single write entry point
+            IpcRequest::AddKeybinding { id, keys, action, .. } => {
+                // Parse the action
+                let new_action: addon_core::actions::Action =
+                    match serde_json::from_value(action.clone()) {
+                        Ok(a) => a,
+                        Err(e) => {
+                            drop(guard);
+                            return IpcMessage::response(
+                                IpcResponse::Error {
+                                    code: "ACTION_PARSE_ERROR".to_string(),
+                                    details: e.to_string(),
+                                    request_id: None,
+                                }
+                                .with_request_id(request_id),
+                            );
+                        }
+                    };
+
+                // Validate system commands
+                if let addon_core::actions::Action::SystemCommand { command } = &new_action {
+                    if let Err(e) = addon_core::actions::validate_system_command(command) {
+                        drop(guard);
+                        return IpcMessage::response(
+                            IpcResponse::Error {
+                                code: "COMMAND_VALIDATION_ERROR".to_string(),
+                                details: format!("New binding '{}': {}", id, e),
+                                request_id: None,
+                            }
+                            .with_request_id(request_id),
+                        );
+                    }
+                }
+
+                // Check for duplicate ID
+                if guard.config.keybindings.iter().any(|b| b.id == *id) {
+                    drop(guard);
+                    return IpcMessage::response(
+                        IpcResponse::Error {
+                            code: "DUPLICATE_ID".to_string(),
+                            details: format!("Keybinding '{}' already exists", id),
+                            request_id: None,
+                        }
+                        .with_request_id(request_id),
+                    );
+                }
+
+                // Add the binding
+                guard.config.keybindings.push(addon_core::config::KeyBinding {
+                    id: id.clone(),
+                    keys: keys.clone(),
+                    action: new_action,
+                    overrides: None,
+                });
+
+                // Save to disk
+                let path = match get_config_path() {
+                    Ok(p) => p,
+                    Err(e) => {
+                        drop(guard);
+                        return IpcMessage::response(
+                            IpcResponse::Error {
+                                code: "SAVE_ERROR".to_string(),
+                                details: e.to_string(),
+                                request_id: None,
+                            }
+                            .with_request_id(request_id),
+                        );
+                    }
+                };
+
+                if let Err(e) = addon_core::config::save_to_disk(&path, &guard.config) {
+                    drop(guard);
+                    return IpcMessage::response(
+                        IpcResponse::Error {
+                            code: "SAVE_ERROR".to_string(),
+                            details: e.to_string(),
+                            request_id: None,
+                        }
+                        .with_request_id(request_id),
+                    );
+                }
+
+                // Collect keys for response, then reinit adapter
+                let cfg_for_adapter = guard.config.clone();
+                let keys_json: Vec<addon_core::ipc::KeyBindingJson> = guard
+                    .config
+                    .keybindings
+                    .iter()
+                    .cloned()
+                    .map(addon_core::ipc::KeyBindingJson::from)
+                    .collect();
+
+                drop(guard);
+
+                // IMP-009-A: Reinitialize adapter using shared helper
+                reinit_adapter(state, &cfg_for_adapter);
+
+                return IpcMessage::response(
+                    IpcResponse::ConfigLoaded {
+                        keys: keys_json,
+                        request_id: None,
+                    }
+                    .with_request_id(request_id),
+                );
+            }
+
+            // IMP-007: Remove a keybinding through the single write entry point
+            IpcRequest::RemoveKeybinding { id, .. } => {
+                let initial_len = guard.config.keybindings.len();
+                guard.config.keybindings.retain(|b| b.id != *id);
+
+                if guard.config.keybindings.len() == initial_len {
+                    drop(guard);
+                    return IpcMessage::response(
+                        IpcResponse::Error {
+                            code: "NOT_FOUND".to_string(),
+                            details: format!("Keybinding '{}' not found", id),
+                            request_id: None,
+                        }
+                        .with_request_id(request_id),
+                    );
+                }
+
+                // Save to disk
+                let path = match get_config_path() {
+                    Ok(p) => p,
+                    Err(e) => {
+                        drop(guard);
+                        return IpcMessage::response(
+                            IpcResponse::Error {
+                                code: "SAVE_ERROR".to_string(),
+                                details: e.to_string(),
+                                request_id: None,
+                            }
+                            .with_request_id(request_id),
+                        );
+                    }
+                };
+
+                if let Err(e) = addon_core::config::save_to_disk(&path, &guard.config) {
+                    drop(guard);
+                    return IpcMessage::response(
+                        IpcResponse::Error {
+                            code: "SAVE_ERROR".to_string(),
+                            details: e.to_string(),
+                            request_id: None,
+                        }
+                        .with_request_id(request_id),
+                    );
+                }
+
+                // Collect keys for response, then reinit adapter
+                let cfg_for_adapter = guard.config.clone();
+                let keys_json: Vec<addon_core::ipc::KeyBindingJson> = guard
+                    .config
+                    .keybindings
+                    .iter()
+                    .cloned()
+                    .map(addon_core::ipc::KeyBindingJson::from)
+                    .collect();
+
+                drop(guard);
+
+                // IMP-009-A: Reinitialize adapter using shared helper
+                reinit_adapter(state, &cfg_for_adapter);
+
+                return IpcMessage::response(
+                    IpcResponse::ConfigLoaded {
+                        keys: keys_json,
                         request_id: None,
                     }
                     .with_request_id(request_id),

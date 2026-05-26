@@ -40,6 +40,7 @@ impl Config {
     /// - Unknown action types (checked via serde deserialization already,
     ///   so we focus on runtime structural issues)
     /// - Invalid system commands (shell metacharacter injection)
+    #[must_use]
     pub fn validate(&self) -> Vec<String> {
         let mut errors = Vec::new();
         let mut seen_ids = std::collections::HashSet::new();
@@ -268,4 +269,120 @@ pub fn load(path: &Path) -> crate::error::Result<Config> {
     }
 
     Ok(config)
+}
+
+/// Saves the configuration to a YAML file at the given path.
+///
+/// # Errors
+///
+/// Returns [`Error::Parse`] if the file cannot be written.
+pub fn save_to_disk(path: &Path, config: &Config) -> crate::error::Result<()> {
+    let contents = serde_yaml::to_string(config).map_err(|e| {
+        crate::error::Error::Parse(format!("failed to serialize config: {}", e))
+    })?;
+
+    // Ensure parent directory exists
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            crate::error::Error::Parse(format!("failed to create config directory: {}", e))
+        })?;
+    }
+
+    std::fs::write(path, contents).map_err(|e| {
+        crate::error::Error::Parse(format!("failed to write config file {:?}: {}", path, e))
+    })?;
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::actions::Action;
+
+    fn sample_config() -> Config {
+        Config {
+            version: "1.0".to_string(),
+            global: crate::config::GlobalSettings::default(),
+            keybindings: vec![
+                KeyBinding {
+                    id: "test1".to_string(),
+                    keys: vec!["Ctrl+A".to_string()],
+                    action: Action::Paste { text: "hello".to_string() },
+                    overrides: None,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn test_validate_no_errors() {
+        let config = sample_config();
+        assert!(config.validate().is_empty());
+    }
+
+    #[test]
+    fn test_validate_duplicate_ids() {
+        let mut config = sample_config();
+        config.keybindings.push(KeyBinding {
+            id: "test1".to_string(),
+            keys: vec!["Ctrl+B".to_string()],
+            action: Action::Paste { text: "world".to_string() },
+            overrides: None,
+        });
+        let errors = config.validate();
+        assert!(errors.iter().any(|e| e.contains("duplicate")));
+    }
+
+    #[test]
+    fn test_validate_empty_keys() {
+        let mut config = sample_config();
+        config.keybindings.push(KeyBinding {
+            id: "empty".to_string(),
+            keys: vec![],
+            action: Action::Paste { text: "".to_string() },
+            overrides: None,
+        });
+        let errors = config.validate();
+        assert!(errors.iter().any(|e| e.contains("no keys")));
+    }
+
+    #[test]
+    fn test_validate_invalid_command() {
+        let mut config = sample_config();
+        config.keybindings.push(KeyBinding {
+            id: "bad_cmd".to_string(),
+            keys: vec!["Ctrl+X".to_string()],
+            action: Action::SystemCommand { command: "rm -rf /; echo hack".to_string() },
+            overrides: None,
+        });
+        let errors = config.validate();
+        assert!(errors.iter().any(|e| e.contains("shell metacharacter")));
+    }
+
+    #[test]
+    fn test_build_keymapper() {
+        let config = sample_config();
+        let mapper = config.build_keymapper(OsPlatform::Linux);
+        let stroke = crate::keymap::KeyStroke::parse("Ctrl+A").unwrap();
+        assert!(mapper.lookup(&stroke).is_some());
+    }
+
+    #[test]
+    fn test_effective_keys_with_overrides() {
+        let mut config = sample_config();
+        config.keybindings[0].overrides = Some(crate::config::PlatformOverrides {
+            macos: Some(vec!["Cmd+A".to_string()]),
+            windows: None,
+            linux: None,
+        });
+
+        let binding = &config.keybindings[0];
+        assert_eq!(binding.effective_keys(OsPlatform::Macos), &["Cmd+A"]);
+        assert_eq!(binding.effective_keys(OsPlatform::Linux), &["Ctrl+A"]);
+    }
 }

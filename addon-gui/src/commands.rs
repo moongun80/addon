@@ -84,7 +84,7 @@ async fn authenticate() -> Result<(), anyhow::Error> {
     
     // Extract challenge
     let (nonce, daemon_pid, timestamp) = match &msg {
-        IpcMessage::Response(IpcResponse::AuthChallenge { challenge, .. }) => (
+        IpcMessage::Response { inner: IpcResponse::AuthChallenge { challenge, .. }, .. } => (
             challenge.nonce.clone(),
             challenge.daemon_pid,
             challenge.timestamp,
@@ -144,7 +144,7 @@ async fn authenticate() -> Result<(), anyhow::Error> {
     let result: IpcMessage = serde_json::from_str(line.trim())?;
     
     match &result {
-        IpcMessage::Response(IpcResponse::AuthResult { accepted, reason, .. }) => {
+        IpcMessage::Response { inner: IpcResponse::AuthResult { accepted, reason, .. }, .. } => {
             if *accepted {
                 tracing::info!("GUI authenticated with daemon");
                 Ok(())
